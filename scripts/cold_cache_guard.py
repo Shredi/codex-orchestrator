@@ -62,6 +62,14 @@ ACK_MIN_DEFAULT = 3.0          # minutes a block stays acknowledgeable
 # MB and this hook runs before every single prompt.
 TAIL_BYTES = 2 * 1024 * 1024
 
+# Rough chars-per-token used ONLY for a Codex transcript that has no
+# usage event to read yet (first turn, or a future format neither of the
+# two known shapes match) — treating that as "no data" would leave the
+# block/warn bands permanently inert the way an unrecognised transcript
+# already does for Claude, which is the one thing this whole change is
+# meant to fix.
+CODEX_BYTES_PER_TOKEN = 4
+
 # List prices per million tokens, used only to turn a token count into
 # something a human reacts to. The 1h cache-write rate is what a cold
 # resume actually pays (subscription sessions were measured at 100% 1h
@@ -154,7 +162,11 @@ def _num(value):
 
 
 def _metric(event, session_id=None, **extra):
-    """Append one event line to ~/.claude/fable-orch/metrics.jsonl (best effort)."""
+    """Append one event line to ~/.claude/fable-orch/metrics.jsonl (best
+    effort). Stamped `"harness": <FABLE_ORCH_HARNESS>` when that env var
+    is set (unset -> key omitted, output unchanged for Claude Code) so an
+    external adapter (e.g. a Codex CLI harness) can tell its own events
+    apart without rewriting this file's bytes after the fact."""
     if (os.environ.get("FABLE_ORCH_METRICS") or "").strip() == "0":
         return
     try:
@@ -164,6 +176,9 @@ def _metric(event, session_id=None, **extra):
         if session_id:
             rec["session"] = str(session_id)[:8]
         rec.update(extra)
+        harness = (os.environ.get("FABLE_ORCH_HARNESS") or "").strip()
+        if harness:
+            rec["harness"] = harness
         with open(os.path.join(d, "metrics.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")
     except Exception:
@@ -220,17 +235,100 @@ def _is_teammate_session(max_hops=12):
 
 # --- context size -----------------------------------------------------
 
+def _is_codex_transcript(transcript_path):
+    """True when `transcript_path` is a Codex CLI session JSONL rather
+    than a Claude Code one — detected by the FIRST line's `type`, not by
+    an env var, so a Codex `transcript_path` just works with no adapter
+    involvement. Codex opens every `~/.codex/sessions/**/*.jsonl` with a
+    `session_meta` record; a Claude Code transcript's first line is one
+    of its own event types (`summary`, `user`, ..., a queue/UI record on
+    some versions) and never that literal string."""
+    try:
+        with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
+            first = f.readline()
+    except OSError:
+        return False
+    try:
+        rec = json.loads(first.strip())
+    except ValueError:
+        return False
+    return isinstance(rec, dict) and rec.get("type") == "session_meta"
+
+
+def _codex_context_tokens(text):
+    """Newest usage line in a Codex session JSONL tail, or None.
+
+    Two shapes seen live under ~/.codex/sessions/**/*.jsonl:
+
+      * the common one — an `event_msg` record whose `payload` is a
+        `token_count` event — carries `payload.info.last_token_usage`,
+        the token accounting for the single most recent API request
+        (Codex resends the whole conversation every turn, so this
+        already IS the current context size). `input_tokens` there
+        already includes `cached_input_tokens` as a subset — verified
+        against a live session where a constant cached floor sat inside
+        a growing input_tokens — so, unlike Claude's three-field sum,
+        no addition is needed.
+      * a rarer top-level `token_usage_record` with the same meaning at
+        `payload.usage.input_tokens`.
+
+    Whichever record is LAST in the transcript wins, same as the Claude
+    path. `info: null` (no request made yet this turn) is skipped, not
+    treated as a zero."""
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if not line or "input_tokens" not in line:
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        usage = None
+        rtype = rec.get("type")
+        if rtype == "event_msg":
+            payload = rec.get("payload")
+            if isinstance(payload, dict) and payload.get("type") == "token_count":
+                info = payload.get("info")
+                if isinstance(info, dict):
+                    usage = info.get("last_token_usage")
+        elif rtype == "token_usage_record":
+            payload = rec.get("payload")
+            if isinstance(payload, dict):
+                usage = payload.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        try:
+            tokens = int(usage.get("input_tokens") or 0)
+        except (TypeError, ValueError):
+            continue
+        if tokens > 0:
+            return tokens
+    return None
+
+
 def context_tokens(transcript_path):
     """Tokens the next request would have to re-cache, or None.
 
-    That is the last assistant message's input_tokens +
-    cache_creation_input_tokens + cache_read_input_tokens: everything the
-    model was handed on the most recent request, cached or not.
+    Claude Code: the last assistant message's input_tokens +
+    cache_creation_input_tokens + cache_read_input_tokens — everything
+    the model was handed on the most recent request, cached or not.
+
+    Codex CLI (detected by `_is_codex_transcript`, see there): the same
+    idea via `_codex_context_tokens`. When a Codex transcript has no
+    usage line at all yet (still on its first request), fall back to a
+    byte-size heuristic (`size // CODEX_BYTES_PER_TOKEN`) rather than
+    return None — the whole point of this branch is to stop the
+    block/warn bands from being inert under Codex, and None-until-the-
+    first-usage-event would still leave the earliest, often-largest
+    resume cold.
 
     Only the last TAIL_BYTES are read — transcripts reach tens of MB and
     this runs before every prompt. Sidechain (subagent) records are
-    skipped: older Claude Code versions interleave them into the chair's
-    transcript, and a worker's 20k context is not this session's."""
+    skipped in the Claude path: older Claude Code versions interleave
+    them into the chair's transcript, and a worker's 20k context is not
+    this session's."""
     if not isinstance(transcript_path, str) or not transcript_path:
         return None
     try:
@@ -242,7 +340,15 @@ def context_tokens(transcript_path):
             chunk = f.read(TAIL_BYTES + 1)
     except OSError:
         return None
-    for line in reversed(chunk.decode("utf-8", "replace").splitlines()):
+    text = chunk.decode("utf-8", "replace")
+
+    if _is_codex_transcript(transcript_path):
+        tokens = _codex_context_tokens(text)
+        if tokens is not None:
+            return tokens
+        return (size // CODEX_BYTES_PER_TOKEN) if size > 0 else None
+
+    for line in reversed(text.splitlines()):
         line = line.strip()
         if not line or '"usage"' not in line:
             continue

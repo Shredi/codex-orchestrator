@@ -37,6 +37,47 @@ def write_transcript(tmp_path, tokens, name="transcript.jsonl", sidechain=False)
     return path
 
 
+def write_codex_transcript(tmp_path, tokens=None, name="codex.jsonl",
+                           shape="event_msg"):
+    """A minimal Codex CLI session JSONL: a `session_meta` first line
+    (what `_is_codex_transcript` keys on) followed by one usage record
+    in the requested `shape` — `"event_msg"` for the common
+    `payload.type == "token_count"` event (`payload.info.last_token_usage
+    .input_tokens`), `"record"` for the rarer top-level
+    `token_usage_record` (`payload.usage.input_tokens`), or `"none"` for
+    a transcript with no usage line at all (byte-heuristic fallback)."""
+    lines = [{"timestamp": "2026-09-05T12:00:00.000Z", "type": "session_meta",
+              "payload": {"id": "test-thread", "cwd": str(tmp_path),
+                         "originator": "codex_cli_rs", "cli_version": "0.153.4"}}]
+    if shape == "event_msg":
+        lines.append({"timestamp": "2026-09-05T12:00:02.000Z", "type": "event_msg",
+                      "payload": {"type": "token_count", "info": {
+                          "total_token_usage": {"input_tokens": tokens,
+                                                "cached_input_tokens": 0,
+                                                "output_tokens": 10,
+                                                "total_tokens": tokens + 10},
+                          "last_token_usage": {"input_tokens": tokens,
+                                               "cached_input_tokens": max(0, tokens - 200),
+                                               "output_tokens": 10,
+                                               "total_tokens": tokens + 10},
+                          "model_context_window": 272000}}})
+    elif shape == "record":
+        lines.append({"timestamp": "2026-09-05T12:00:02.000Z",
+                      "type": "token_usage_record",
+                      "payload": {"thread_id": "test-thread",
+                                 "usage": {"input_tokens": tokens,
+                                          "cached_input_tokens": max(0, tokens - 200),
+                                          "output_tokens": 10,
+                                          "total_tokens": tokens + 10}}})
+    elif shape == "none":
+        pass
+    else:
+        raise ValueError(shape)
+    path = tmp_path / name
+    path.write_text("\n".join(json.dumps(l) for l in lines) + "\n", encoding="utf-8")
+    return path
+
+
 def prompt_payload(tmp_path, prompt="do the thing", transcript=None, **extra):
     payload = {"session_id": SESSION, "cwd": str(tmp_path), "prompt": prompt,
                "hook_event_name": "UserPromptSubmit"}
@@ -400,6 +441,95 @@ def test_only_the_transcript_tail_is_read(tmp_path):
     assert run_hook(SCRIPT, prompt_payload(tmp_path, transcript=path),
                     tmpdir=tmp_path) is None
     assert time.time() - started < 5  # includes interpreter startup
+
+
+# --- Codex CLI transcripts: same guard, no adapter tail-rewrite -------
+#
+# `_module` (below, in the marker-failure section) loads the guard
+# in-process; referencing it here works even though it is defined later
+# in the file — by the time any test RUNS, the whole module has already
+# been executed once, so the name exists in this module's namespace.
+
+def test_codex_transcript_is_detected_by_first_line(tmp_path, monkeypatch):
+    mod = _module(tmp_path, monkeypatch)
+    codex = write_codex_transcript(tmp_path, 1000)
+    claude = write_transcript(tmp_path, 1000)
+    assert mod._is_codex_transcript(str(codex)) is True
+    assert mod._is_codex_transcript(str(claude)) is False
+
+
+def test_codex_event_msg_token_count_is_read(tmp_path, monkeypatch):
+    mod = _module(tmp_path, monkeypatch)
+    path = write_codex_transcript(tmp_path, 55000, shape="event_msg")
+    assert mod.context_tokens(str(path)) == 55000
+
+
+def test_codex_token_usage_record_shape_is_read(tmp_path, monkeypatch):
+    # The rarer top-level shape (older/newer Codex CLI builds emit this
+    # instead of the event_msg/token_count wrapper) is read the same way.
+    mod = _module(tmp_path, monkeypatch)
+    path = write_codex_transcript(tmp_path, 77000, shape="record")
+    assert mod.context_tokens(str(path)) == 77000
+
+
+def test_codex_null_info_is_skipped_not_treated_as_zero(tmp_path, monkeypatch):
+    # A token_count event fires with info:null before any request has
+    # completed that turn. It must be skipped, not read as "0 tokens"
+    # (which would silently defeat the block/warn bands) — the search
+    # keeps walking backward to the real usage line before it. The decoy
+    # "input_tokens" text keeps the line past the module's cheap
+    # substring pre-filter so the info:null branch actually executes.
+    mod = _module(tmp_path, monkeypatch)
+    text = "\n".join([
+        json.dumps({"type": "session_meta"}),
+        json.dumps({"type": "event_msg", "payload": {"type": "token_count",
+                    "info": {"last_token_usage": {"input_tokens": 42000,
+                                                  "cached_input_tokens": 100}}}}),
+        json.dumps({"type": "event_msg", "note": "input_tokens decoy",
+                    "payload": {"type": "token_count", "info": None}}),
+    ])
+    assert mod._codex_context_tokens(text) == 42000
+
+
+def test_codex_last_usage_line_wins(tmp_path, monkeypatch):
+    mod = _module(tmp_path, monkeypatch)
+    path = tmp_path / "codex-multi.jsonl"
+    lines = [
+        {"type": "session_meta", "payload": {"originator": "codex_cli_rs"}},
+        {"type": "event_msg", "payload": {"type": "token_count", "info": {
+            "last_token_usage": {"input_tokens": 1000, "cached_input_tokens": 0}}}},
+        {"type": "event_msg", "payload": {"type": "token_count", "info": {
+            "last_token_usage": {"input_tokens": 9000, "cached_input_tokens": 500}}}},
+    ]
+    path.write_text("\n".join(json.dumps(l) for l in lines) + "\n", encoding="utf-8")
+    assert mod.context_tokens(str(path)) == 9000
+
+
+def test_codex_no_usage_falls_back_to_byte_heuristic(tmp_path, monkeypatch):
+    mod = _module(tmp_path, monkeypatch)
+    path = write_codex_transcript(tmp_path, shape="none")
+    size = path.stat().st_size
+    tokens = mod.context_tokens(str(path))
+    assert tokens == size // mod.CODEX_BYTES_PER_TOKEN
+    assert tokens > 0
+
+
+def test_codex_cold_block_band_fires_end_to_end(tmp_path):
+    # The whole point of this ledger item: a Codex `transcript_path`
+    # reaches the SAME block band a Claude one would, with no adapter
+    # tail-rewrite involved — the guard reads it directly.
+    cold_marker(tmp_path)
+    transcript = write_codex_transcript(tmp_path, 412000)
+    assert blocks(run_hook(SCRIPT, prompt_payload(tmp_path, transcript=transcript),
+                           tmpdir=tmp_path))
+
+
+def test_codex_warn_band_fires_end_to_end(tmp_path):
+    cold_marker(tmp_path)
+    transcript = write_codex_transcript(tmp_path, 82000)
+    result = run_hook(SCRIPT, prompt_payload(tmp_path, transcript=transcript),
+                      tmpdir=tmp_path)
+    assert result is not None and "systemMessage" in result
 
 
 # --- the resume path: SessionStart must not wipe the baseline --------
