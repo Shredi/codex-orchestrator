@@ -51,7 +51,7 @@ def test_openrouter_free_profile_shape():
     data = load("openrouter-free")
     assert "single" in data, "openrouter-free must use the [single] shortcut, not per-tier blocks"
     single = data["single"]
-    assert single["model"] == "openrouter/openrouter/omen-alpha"
+    assert single["model"] == "openrouter/free"
     assert single.get("model_reasoning_effort")
     assert "tiers" not in data
     assert "customer" in data.get("note", "") or "credential" in data.get("note", "")

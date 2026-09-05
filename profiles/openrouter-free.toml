@@ -11,6 +11,9 @@
 provider = "openrouter-free"
 note = "never customer/credential work"
 
+# Verified 2026-09-05: `codex exec -c model_provider=openrouter -m openrouter/free` → ok.
+# Codex model ids carry NO provider prefix when model_provider is set;
+# "openrouter/free" is OpenRouter's own free-router id. omen-alpha was not a valid id.
 [single]
-model = "openrouter/openrouter/omen-alpha"
+model = "openrouter/free"
 model_reasoning_effort = "medium"

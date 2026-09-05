@@ -90,7 +90,7 @@ def test_render_tier_agent_matches_committed_openai_output(codex_sync, tier):
 def test_render_tier_agent_openrouter_free_uses_single_model(codex_sync):
     profile_data = codex_sync.load_profile("openrouter-free")
     generated = codex_sync.render_tier_agent("openrouter-free", "opus", profile_data)
-    assert 'model = "openrouter/openrouter/omen-alpha"' in generated
+    assert 'model = "openrouter/free"' in generated
     assert "not committed" in generated
 
 

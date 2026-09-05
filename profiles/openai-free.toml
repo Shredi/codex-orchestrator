@@ -1,0 +1,26 @@
+# ChatGPT login WITHOUT a Plus/Pro plan (state on 2026-09-05): Codex accepts
+# only gpt-5.6-luna ("gpt-5.6-sol / gpt-6-astra is not supported when using
+# Codex with a ChatGPT account"). Every tier resolves to Luna; effort carries
+# the tier difference. Switch to `openai` once a subscription is active.
+provider = "openai-free"
+
+[tiers.chair]
+model = "gpt-5.6-luna"
+model_reasoning_effort = "high"
+chair_fallback = "gpt-5.6-luna"
+
+[tiers.fable]
+model = "gpt-5.6-luna"
+model_reasoning_effort = "xhigh"
+
+[tiers.opus]
+model = "gpt-5.6-luna"
+model_reasoning_effort = "xhigh"
+
+[tiers.sonnet]
+model = "gpt-5.6-luna"
+model_reasoning_effort = "high"
+
+[tiers.cheap]
+model = "gpt-5.6-luna"
+model_reasoning_effort = "low"

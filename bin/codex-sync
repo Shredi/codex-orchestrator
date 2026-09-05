@@ -514,7 +514,7 @@ def sync_mcp_servers(home: Path, repo: Path | None, dry_run: bool) -> list[tuple
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="codex-sync", description=__doc__.splitlines()[0])
-    parser.add_argument("--profile", required=True, choices=["openai", "openrouter-free", "anthropic-api"])
+    parser.add_argument("--profile", required=True, choices=sorted(p.stem for p in (repo_root() / "profiles").glob("*.toml")))
     parser.add_argument("--repo", type=Path, default=None, help="project repo to sync .claude/agents -> .codex/agents + AGENTS.md stub")
     parser.add_argument("--global", dest="do_global", action="store_true", help="also/only run the global steps (tier agents, skills farm, mcp merge); always on by default when --repo is omitted")
     parser.add_argument("--dry-run", action="store_true", help="print the drift summary, write nothing")
