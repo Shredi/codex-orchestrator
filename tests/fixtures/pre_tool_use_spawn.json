@@ -1,0 +1,14 @@
+{
+  "session_id": "codex-fixture-session",
+  "transcript_path": "/tmp/codex-sessions/codex-fixture-session.jsonl",
+  "cwd": "/tmp/codex-fixture-repo",
+  "hook_event_name": "PreToolUse",
+  "turn_id": "turn_02",
+  "tool_name": "SpawnAgent",
+  "tool_use_id": "call_spawn_01",
+  "tool_input": {
+    "agent": "sonnet",
+    "prompt": "PLACEHOLDER_PROMPT"
+  },
+  "permission_mode": "workspace-write"
+}

@@ -1,0 +1,13 @@
+{
+  "session_id": "codex-fixture-session",
+  "transcript_path": "/tmp/codex-sessions/codex-fixture-session.jsonl",
+  "cwd": "/tmp/codex-fixture-repo",
+  "hook_event_name": "PreToolUse",
+  "turn_id": "turn_03",
+  "tool_name": "apply_patch",
+  "tool_use_id": "call_patch_01",
+  "tool_input": {
+    "input": "*** Begin Patch\n*** Update File: PLACEHOLDER_PATH\n@@\n-old\n+new\n*** End Patch\n"
+  },
+  "permission_mode": "workspace-write"
+}

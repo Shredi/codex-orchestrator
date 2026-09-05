@@ -1,0 +1,14 @@
+{
+  "session_id": "codex-fixture-session",
+  "transcript_path": "/tmp/codex-sessions/codex-fixture-session.jsonl",
+  "cwd": "/tmp/codex-fixture-repo",
+  "hook_event_name": "PreToolUse",
+  "turn_id": "turn_04",
+  "tool_name": "shell",
+  "tool_use_id": "call_shell_01",
+  "tool_input": {
+    "command": ["/bin/zsh", "-lc", "ls -la"],
+    "workdir": "/tmp/codex-fixture-repo"
+  },
+  "permission_mode": "workspace-write"
+}

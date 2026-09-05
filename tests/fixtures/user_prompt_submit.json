@@ -1,0 +1,9 @@
+{
+  "session_id": "codex-fixture-session",
+  "transcript_path": "/tmp/codex-sessions/codex-fixture-session.jsonl",
+  "cwd": "/tmp/codex-fixture-repo",
+  "hook_event_name": "UserPromptSubmit",
+  "turn_id": "turn_01",
+  "prompt": "/sync",
+  "permission_mode": "workspace-write"
+}
