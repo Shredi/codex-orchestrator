@@ -1,0 +1,553 @@
+#!/usr/bin/env python3
+"""codex-sync — generate Codex-side config from the .claude/-side sources.
+
+The .claude/ tree (agent frontmatter, skills, MCP server config) is the
+source of truth; everything this script writes is a derived artifact that
+can be regenerated. Stdlib only, no third-party dependencies (uses
+`tomllib`, Python >= 3.11; a vendored-free fallback parser is used for the
+one write-side need — TOML serialization — since `tomllib` is read-only).
+
+Usage:
+    codex-sync --profile openai [--repo PATH] [--global] [--dry-run]
+
+Steps performed (see README.md "Layout" for the full rationale):
+  (a) ~/.codex/agents/<tier>.toml           for tier in sonnet, opus, fable
+  (b) <repo>/.codex/agents/<name>.toml      generated from <repo>/.claude/agents/*.md
+  (c) <repo>/AGENTS.md stub                 only if the file does not already exist
+  (d) ~/.agents/skills/<name> symlinks      mirroring ~/.claude/skills/<name>
+  (e) [mcp_servers.*] entries appended to ~/.codex/config.toml for servers not
+      already present, sourced from ~/.claude.json and (with --repo) the
+      repo's own .mcp.json — never with secret values, only structure + the
+      env var name to fill in (see `_redact_env`).
+
+(a) and (d) and (e)'s ~/.claude.json half always run ("global" steps).
+(b), (c) and (e)'s repo-.mcp.json half only run when --repo is given.
+--global forces the global steps to run even though --repo is also given
+(this is already the default — the flag exists to make an invocation that
+combines both explicit, and to document the split for `--dry-run` review).
+
+Idempotent: every write is compared against its current content first and
+skipped when unchanged; reports "unchanged" in the drift summary instead of
+rewriting. Never overwrites an existing AGENTS.md, and never overwrites a
+[mcp_servers.<name>] section that's already in ~/.codex/config.toml.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+import tomllib
+from pathlib import Path
+
+# --------------------------------------------------------------------------
+# Tier agent templates — the developer_instructions/description text shipped
+# in agents/{sonnet,opus,fable}.toml. Rendering these here (rather than just
+# reading the committed files) means every profile gets the same worker
+# doctrine; only model/model_reasoning_effort change per profile. A golden
+# test (tests/test_codex_sync.py) asserts render_tier_agent("openai", tier)
+# reproduces the committed agents/<tier>.toml byte-for-byte.
+# --------------------------------------------------------------------------
+
+TIERS = ("sonnet", "opus", "fable")  # the three spawnable worker tiers (not chair/cheap)
+
+TIER_META = {
+    "sonnet": {
+        "description": (
+            "Default tier for routine implementation, research and multi-step "
+            "work delegated by the chair. Carries the volume of a Requirements "
+            "Ledger item — most spawned work belongs here, not at the opus or "
+            "fable tier."
+        ),
+        "instructions": (
+            "You are a sonnet-tier worker in a Codex orchestrator session. Read the active\n"
+            "`.workflow/LEDGER-*.md` before touching anything — it names which items are\n"
+            "yours. Do the item(s) you were asked to do; note anything else you notice as\n"
+            "out-of-scope rather than fixing it unasked. Report back in under 40 lines:\n"
+            "ledger items addressed, a summary, up to 10 lines of verbatim evidence (more\n"
+            "goes to `.workflow/scratch/<topic>` with the path noted), a confidence\n"
+            "statement, and anything out of scope you noticed. Escalate to an opus-tier\n"
+            "worker instead of grinding through algorithmically hard or high-risk work at\n"
+            "this tier.\n"
+        ),
+    },
+    "opus": {
+        "description": (
+            "Escalation tier for hard slices: algorithmically tricky work, "
+            "high-risk changes, fresh-eyes verification and closes. Spawn this "
+            "instead of pushing a sonnet-tier worker through work it's grinding on."
+        ),
+        "instructions": (
+            "You are an opus-tier worker in a Codex orchestrator session, spawned for\n"
+            "work that's too hard, too risky, or needs a fresh-eyes check that a sonnet\n"
+            "worker shouldn't do unsupervised. Read the active `.workflow/LEDGER-*.md`\n"
+            "first. When verifying someone else's close, check the ledger item by item\n"
+            "against real evidence, not the closing report's word for it. Report back in\n"
+            "under 40 lines: ledger items addressed, a summary, up to 10 lines of verbatim\n"
+            "evidence (more to `.workflow/scratch/<topic>`, path noted), a confidence\n"
+            "statement, and anything out of scope you noticed.\n"
+        ),
+    },
+    "fable": {
+        "description": (
+            "Same model as the chair itself — the rare escalation above opus for "
+            "the hardest slices, and the default fresh-eyes verifier for the "
+            "largest closes when the chair's own limit allows it. Spawn "
+            "sparingly; it spends the same limit the chair is holding."
+        ),
+        "instructions": (
+            "You are a fable-tier worker in a Codex orchestrator session — the same\n"
+            "model tier as the chair, spawned only when opus-tier escalation isn't\n"
+            "enough. Read the active `.workflow/LEDGER-*.md` first. Spare the shared\n"
+            "limit where you can; if the chair's profile has already fallen back to opus\n"
+            "(the model isn't available yet, or the limit ran dry), you may be running\n"
+            "at the opus fallback model instead of the chair's usual one — that's\n"
+            "expected, not an error. Report back in under 40 lines: ledger items\n"
+            "addressed, a summary, up to 10 lines of verbatim evidence (more to\n"
+            "`.workflow/scratch/<topic>`, path noted), a confidence statement, and\n"
+            "anything out of scope you noticed.\n"
+        ),
+    },
+}
+
+
+def repo_root() -> Path:
+    """codex-orchestrator's own repo root (this script lives in bin/)."""
+    return Path(__file__).resolve().parent.parent
+
+
+def load_profile(profile: str, profiles_dir: Path | None = None) -> dict:
+    profiles_dir = profiles_dir or (repo_root() / "profiles")
+    path = profiles_dir / f"{profile}.toml"
+    with path.open("rb") as f:
+        return tomllib.load(f)
+
+
+def resolve_tier(profile_data: dict, tier: str) -> tuple[str | None, str | None]:
+    """Return (model, model_reasoning_effort) for a tier name.
+
+    Honors the openrouter-free shortcut: a `[single]` table means every
+    tier resolves to the same model+effort (see profiles/openrouter-free.toml).
+    """
+    if "single" in profile_data:
+        single = profile_data["single"]
+        return single.get("model"), single.get("model_reasoning_effort")
+    tiers = profile_data.get("tiers", {})
+    t = tiers.get(tier)
+    if t is None:
+        return None, None
+    return t.get("model"), t.get("model_reasoning_effort")
+
+
+def _toml_str(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def render_tier_agent(profile: str, tier: str, profile_data: dict) -> str:
+    meta = TIER_META[tier]
+    model, effort = resolve_tier(profile_data, tier)
+    if profile == "openai":
+        lines = [
+            f"# Generated by bin/codex-sync --profile {profile} (committed as the openai",
+            "# profile's default output — regenerate if profiles/openai.toml changes).",
+        ]
+    else:
+        lines = [
+            f"# Generated by bin/codex-sync --profile {profile}.",
+            f"# Regenerate if profiles/{profile}.toml changes — not committed (only the",
+            "# openai profile's output is checked in, under agents/).",
+        ]
+    if tier == "sonnet":
+        lines += [
+            "# Codex subagent schema: developers.openai.com/docs/agent-configuration/subagents",
+            "# (fetched 2026-09-05): name, description, developer_instructions required;",
+            "# model, model_reasoning_effort, sandbox_mode optional.",
+        ]
+    lines += [
+        f'name = "{tier}"',
+        f"description = {_toml_str(meta['description'])}",
+        'developer_instructions = """',
+        meta["instructions"].rstrip("\n"),
+        '"""',
+    ]
+    if model:
+        lines.append(f'model = "{model}"')
+    if effort:
+        lines.append(f'model_reasoning_effort = "{effort}"')
+    lines.append('sandbox_mode = "workspace-write"')
+    return "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------
+# .claude/agents/*.md frontmatter parsing (no PyYAML — the frontmatter used
+# across this codebase is a small, regular subset: bare scalars, folded
+# double-quoted multi-line strings, and one-line JSON objects for
+# mcpServers). See tests/test_codex_sync.py for the real-file fixtures this
+# is validated against (hub + bulwark agent files).
+# --------------------------------------------------------------------------
+
+_KEY_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):[ \t]?(.*)$")
+
+
+def _coerce_value(buf: list[str]):
+    raw = " ".join(s.strip() for s in buf if s.strip() != "").strip()
+    if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
+        return raw[1:-1]
+    if raw.startswith("{") or raw.startswith("["):
+        return json.loads(raw)
+    return raw
+
+
+def parse_frontmatter(text: str) -> tuple[dict, str]:
+    if not text.startswith("---"):
+        raise ValueError("no frontmatter (file must start with '---')")
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        raise ValueError("malformed frontmatter (need a second '---')")
+    fm_text, body = parts[1], parts[2]
+    body = body.lstrip("\n")
+
+    fields: dict = {}
+    key = None
+    buf: list[str] = []
+
+    def flush():
+        if key is not None:
+            fields[key] = _coerce_value(buf)
+
+    for line in fm_text.split("\n"):
+        if not line.strip():
+            continue
+        m = _KEY_RE.match(line)
+        if m and not line[0].isspace():
+            flush()
+            key = m.group(1)
+            buf = [m.group(2)]
+        elif key is not None:
+            buf.append(line.strip())
+    flush()
+    return fields, body
+
+
+READ_ONLY_TOOLS = {"Read", "Grep", "Glob", "WebFetch", "WebSearch", "NotebookRead"}
+
+
+def sandbox_mode_for(tools_value) -> str:
+    """`tools:` frontmatter -> Codex sandbox_mode.
+
+    Absent entirely (every current .claude/agents/*.md example) -> the agent
+    has the harness's full default tool access, which includes writes ->
+    workspace-write. Present and every listed tool is read-only -> read-only.
+    Anything else (Write/Edit/Bash/etc. present, or an unrecognised shape) ->
+    workspace-write, the safe-for-capability default.
+    """
+    if not tools_value:
+        return "workspace-write"
+    if isinstance(tools_value, str):
+        tools = [t.strip() for t in tools_value.split(",") if t.strip()]
+    elif isinstance(tools_value, list):
+        tools = [str(t).strip() for t in tools_value]
+    else:
+        return "workspace-write"
+    if tools and all(t in READ_ONLY_TOOLS for t in tools):
+        return "read-only"
+    return "workspace-write"
+
+
+def _toml_value(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    return _toml_str(str(value))
+
+
+def render_mcp_table(header: str, table: dict) -> list[str]:
+    """Render one `[header]` TOML table (strings/lists/nested dict only)."""
+    lines = [f"[{header}]"]
+    nested = []
+    for k, v in table.items():
+        if isinstance(v, dict):
+            nested.append((k, v))
+        else:
+            lines.append(f"{k} = {_toml_value(v)}")
+    for k, v in nested:
+        lines.append("")
+        lines += render_mcp_table(f"{header}.{k}", v)
+    return lines
+
+
+def render_project_agent(name: str, fields: dict, body: str, profile_data: dict) -> str:
+    model_tier = fields.get("model")
+    model, effort = (None, None)
+    if model_tier:
+        model, effort = resolve_tier(profile_data, model_tier)
+    # frontmatter `effort:` overrides the profile default for that tier
+    if fields.get("effort"):
+        effort = fields["effort"]
+    sandbox_mode = sandbox_mode_for(fields.get("tools"))
+
+    lines = [
+        f"# Generated by bin/codex-sync from .claude/agents/{name}.md — do not hand-edit;",
+        "# edit the .md source and re-run codex-sync.",
+        f'name = "{name}"',
+    ]
+    if fields.get("description"):
+        lines.append(f"description = {_toml_str(fields['description'])}")
+    lines.append('developer_instructions = """')
+    lines.append(body.rstrip("\n"))
+    lines.append('"""')
+    if model:
+        lines.append(f'model = "{model}"')
+    if effort:
+        lines.append(f'model_reasoning_effort = "{effort}"')
+    lines.append(f'sandbox_mode = "{sandbox_mode}"')
+
+    mcp_servers = fields.get("mcpServers")
+    if isinstance(mcp_servers, dict):
+        for srv_name, srv_cfg in mcp_servers.items():
+            lines.append("")
+            lines += render_mcp_table(f"mcp_servers.{srv_name}", srv_cfg)
+    return "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------
+# Filesystem actions — every one returns a short status string for the
+# drift summary and honors dry_run (no writes at all when set).
+# --------------------------------------------------------------------------
+
+
+def write_if_changed(path: Path, content: str, dry_run: bool) -> str:
+    existing = path.read_text(encoding="utf-8") if path.exists() else None
+    if existing == content:
+        return "unchanged"
+    if dry_run:
+        return "would-create" if existing is None else "would-update"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return "created" if existing is None else "updated"
+
+
+AGENTS_MD_STUB = (
+    "# AGENTS.md\n\n"
+    "Project instructions live in CLAUDE.md — read it first.\n"
+    "(This stub exists because Codex CLI reads AGENTS.md, not CLAUDE.md; Claude Code\n"
+    "reads CLAUDE.md directly. Generated once by codex-sync — never overwritten after.)\n"
+)
+
+
+def ensure_agents_md_stub(repo: Path, dry_run: bool) -> str:
+    path = repo / "AGENTS.md"
+    if path.exists():
+        return "unchanged (already exists — never overwritten)"
+    if dry_run:
+        return "would-create"
+    path.write_text(AGENTS_MD_STUB, encoding="utf-8")
+    return "created"
+
+
+def sync_global_tier_agents(profile: str, profile_data: dict, codex_home: Path, dry_run: bool) -> list[tuple[str, str]]:
+    results = []
+    for tier in TIERS:
+        content = render_tier_agent(profile, tier, profile_data)
+        path = codex_home / "agents" / f"{tier}.toml"
+        status = write_if_changed(path, content, dry_run)
+        results.append((f"~/.codex/agents/{tier}.toml", status))
+    return results
+
+
+def sync_project_agents(repo: Path, profile_data: dict, dry_run: bool) -> list[tuple[str, str]]:
+    results = []
+    src_dir = repo / ".claude" / "agents"
+    if not src_dir.is_dir():
+        return results
+    for md_path in sorted(src_dir.glob("*.md")):
+        text = md_path.read_text(encoding="utf-8")
+        fields, body = parse_frontmatter(text)
+        name = fields.get("name", md_path.stem)
+        content = render_project_agent(name, fields, body, profile_data)
+        out_path = repo / ".codex" / "agents" / f"{name}.toml"
+        status = write_if_changed(out_path, content, dry_run)
+        results.append((f".codex/agents/{name}.toml", status))
+    return results
+
+
+def _ensure_symlink(link: Path, target: Path, dry_run: bool) -> str:
+    if link.is_symlink():
+        try:
+            same = link.resolve() == target.resolve()
+        except OSError:
+            same = False
+        if same:
+            return "unchanged"
+        if dry_run:
+            return "would-relink"
+        link.unlink()
+    elif link.exists():
+        return "skip (exists, not a symlink)"
+    if dry_run:
+        return "would-create"
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return "created"
+    except OSError as exc:
+        return (
+            f"failed to symlink ({exc}) — on Windows this needs Developer Mode or an "
+            f"elevated shell for directory symlinks; create a junction manually instead: "
+            f'mklink /J "{link}" "{target}"'
+        )
+
+
+def sync_skills_farm(home: Path, dry_run: bool) -> list[tuple[str, str]]:
+    src_dir = home / ".claude" / "skills"
+    dst_dir = home / ".agents" / "skills"
+    results: list[tuple[str, str]] = []
+    if not src_dir.is_dir():
+        return results
+    if not dry_run:
+        dst_dir.mkdir(parents=True, exist_ok=True)
+    for entry in sorted(src_dir.iterdir()):
+        if not entry.is_dir():
+            continue
+        status = _ensure_symlink(dst_dir / entry.name, entry, dry_run)
+        results.append((f"~/.agents/skills/{entry.name}", status))
+    return results
+
+
+SECRET_LOOKING_KEYS = {"token", "password", "key", "secret", "api_key", "apikey"}
+
+
+def _redact_env(env: dict) -> dict:
+    """Never carry a literal secret value into the generated snippet.
+
+    Only keys whose *name* looks like a credential (token/password/key/
+    secret/api_key) are ever withheld — plain config values (URLs,
+    hostnames, usernames, feature flags) pass through verbatim regardless
+    of shape. A secret-looking key is still passed through if its value
+    already reads as a reference (a shell/env expansion, or a path a human
+    is expected to point at their own secrets store) rather than a literal.
+    """
+    out = {}
+    for k, v in env.items():
+        v_str = str(v)
+        looks_secret_key = any(s in k.lower() for s in SECRET_LOOKING_KEYS)
+        looks_like_reference = v_str.startswith(("$", "~", "/")) or "${" in v_str
+        if looks_secret_key and not looks_like_reference:
+            out[k] = f"REPLACE_ME  # was {k}, value withheld by codex-sync (never copies secrets) — see ~/.claude/secrets/ or the source .mcp.json"
+        else:
+            out[k] = v_str
+    return out
+
+
+def _load_mcp_servers_from(path: Path, key_path: tuple[str, ...] = ("mcpServers",)) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    node = data
+    for k in key_path:
+        if not isinstance(node, dict):
+            return {}
+        node = node.get(k, {})
+    return node if isinstance(node, dict) else {}
+
+
+def collect_mcp_servers(home: Path, repo: Path | None) -> dict:
+    servers = {}
+    servers.update(_load_mcp_servers_from(home / ".claude.json"))
+    if repo is not None:
+        servers.update(_load_mcp_servers_from(repo / ".mcp.json"))
+    return servers
+
+
+def _existing_mcp_server_names(config_toml: Path) -> set[str]:
+    if not config_toml.exists():
+        return set()
+    try:
+        data = tomllib.loads(config_toml.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError:
+        # Best-effort text scan if the file has content codex-sync doesn't
+        # need to fully understand (e.g. hand-edited sections it can't parse).
+        return set(re.findall(r"^\[mcp_servers\.([^.\]]+)\]", config_toml.read_text(encoding="utf-8"), re.M))
+    return set(data.get("mcp_servers", {}).keys())
+
+
+def sync_mcp_servers(home: Path, repo: Path | None, dry_run: bool) -> list[tuple[str, str]]:
+    codex_config = home / ".codex" / "config.toml"
+    discovered = collect_mcp_servers(home, repo)
+    existing = _existing_mcp_server_names(codex_config)
+    results = []
+    new_blocks = []
+    for name, cfg in discovered.items():
+        if name in existing:
+            results.append((f"mcp_servers.{name}", "unchanged (already in config.toml)"))
+            continue
+        safe_cfg = dict(cfg)
+        if isinstance(safe_cfg.get("env"), dict):
+            safe_cfg["env"] = _redact_env(safe_cfg["env"])
+        new_blocks.append("\n".join(render_mcp_table(f"mcp_servers.{name}", safe_cfg)))
+        results.append((f"mcp_servers.{name}", "would-append" if dry_run else "appended"))
+    if new_blocks and not dry_run:
+        banner = (
+            "\n# --- added by codex-sync "
+            + "(never writes secret values — replace REPLACE_ME placeholders by hand) ---\n"
+        )
+        codex_config.parent.mkdir(parents=True, exist_ok=True)
+        with codex_config.open("a", encoding="utf-8") as f:
+            if codex_config.stat().st_size if codex_config.exists() else 0:
+                f.write("\n")
+            f.write(banner)
+            f.write("\n\n".join(new_blocks) + "\n")
+    return results
+
+
+# --------------------------------------------------------------------------
+# CLI
+# --------------------------------------------------------------------------
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(prog="codex-sync", description=__doc__.splitlines()[0])
+    parser.add_argument("--profile", required=True, choices=["openai", "openrouter-free", "anthropic-api"])
+    parser.add_argument("--repo", type=Path, default=None, help="project repo to sync .claude/agents -> .codex/agents + AGENTS.md stub")
+    parser.add_argument("--global", dest="do_global", action="store_true", help="also/only run the global steps (tier agents, skills farm, mcp merge); always on by default when --repo is omitted")
+    parser.add_argument("--dry-run", action="store_true", help="print the drift summary, write nothing")
+    parser.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)  # test seam
+    args = parser.parse_args(argv)
+
+    profile_data = load_profile(args.profile)
+    run_global = args.do_global or args.repo is None
+
+    report: list[tuple[str, str]] = []
+
+    if run_global:
+        report += sync_global_tier_agents(args.profile, profile_data, args.home / ".codex", args.dry_run)
+        report += sync_skills_farm(args.home, args.dry_run)
+
+    if args.repo is not None:
+        report += sync_project_agents(args.repo, profile_data, args.dry_run)
+        report.append(("AGENTS.md", ensure_agents_md_stub(args.repo, args.dry_run)))
+
+    if run_global or args.repo is not None:
+        report += sync_mcp_servers(args.home, args.repo, args.dry_run)
+
+    label = "DRY RUN — " if args.dry_run else ""
+    print(f"{label}codex-sync --profile {args.profile}" + (f" --repo {args.repo}" if args.repo else ""))
+    changed = 0
+    for path, status in report:
+        marker = " " if status.startswith("unchanged") else "*"
+        print(f"{marker} {path}: {status}")
+        if not status.startswith("unchanged"):
+            changed += 1
+    print(f"\n{changed} of {len(report)} entries changed" + (" (dry run, nothing written)" if args.dry_run else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
