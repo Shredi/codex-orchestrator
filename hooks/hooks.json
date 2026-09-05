@@ -7,7 +7,8 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/codex_adapter.py\" inject_instructions",
             "commandWindows": "python \"${CLAUDE_PLUGIN_ROOT}\\scripts\\codex_adapter.py\" inject_instructions",
-            "timeout": 15
+            "timeout": 15,
+            "additionalContextLimit": 20000
           }
         ]
       }
@@ -19,14 +20,15 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/codex_adapter.py\" cold_cache_guard",
             "commandWindows": "python \"${CLAUDE_PLUGIN_ROOT}\\scripts\\codex_adapter.py\" cold_cache_guard",
-            "timeout": 15
+            "timeout": 15,
+            "additionalContextLimit": 20000
           }
         ]
       }
     ],
     "PreToolUse": [
       {
-        "matcher": "^(SpawnAgent|spawn_agent|collab__spawn_agent|collab\\.spawn_agent|create_agent|Agent|Task|Workflow|TaskCreate)$",
+        "matcher": "^(collaborationspawn_agent|collaboration[._]?spawn_agent|SpawnAgent|spawn_agent|collab__spawn_agent|collab\\.spawn_agent|create_agent|Agent|Task|Workflow|TaskCreate)$",
         "hooks": [
           {
             "type": "command",
@@ -37,7 +39,7 @@
         ]
       },
       {
-        "matcher": "^(apply_patch|applypatch|write_file|edit_file|create_file|Write)$",
+        "matcher": "^(apply_patch|applypatch|write_file|edit_file|create_file|Write|Bash|shell|exec|local_shell)$",
         "hooks": [
           {
             "type": "command",
@@ -50,7 +52,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "^(apply_patch|applypatch|write_file|edit_file|create_file|Write|Edit|MultiEdit)$",
+        "matcher": "^(apply_patch|applypatch|write_file|edit_file|create_file|Write|Edit|MultiEdit|Bash|shell|exec|local_shell)$",
         "hooks": [
           {
             "type": "command",

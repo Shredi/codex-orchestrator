@@ -1,10 +1,9 @@
 """Adapter tests: Codex hook payload -> core guard -> Codex hook output.
 
-Every payload starts from a fixture in `tests/fixtures/` — see that
-directory's README: they are reconstructed from the P1 protocol docs,
-NOT captured from a live Codex hook fire (Codex gates hooks behind a
-persisted trust prompt that nobody has accepted yet). These tests prove
-the adapter, not Codex.
+Every payload starts from a fixture in `tests/fixtures/` — CAPTURED
+LIVE from Codex CLI 0.153.4 on 2026-09-05 (see that directory's README
+and `<claude-repo>/.workflow/scratch/codex-probe/probe.log`), with only
+the session id and the tool bodies normalised for the tests.
 
 The core guards run as real subprocesses, exactly as the adapter runs
 them in production. `TMPDIR`/`TEMP`/`TMP` point at the test sandbox so
@@ -48,7 +47,10 @@ SESSION = "codex-fixture-session"
 # --- harness ----------------------------------------------------------
 
 def fixture(name, **overrides):
+    """A captured payload, with the live session id swapped for a
+    deterministic one (the markers the guards read are keyed on it)."""
     data = json.loads((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
+    data["session_id"] = SESSION
     data.update(overrides)
     return data
 
@@ -99,8 +101,18 @@ def write_ledger(repo, name="LEDGER-topic.md", body="- [ ] 1. open item\n"):
 
 
 def patch_text(*paths, op="Update File"):
-    hunks = "".join(f"*** {op}: {p}\n@@\n-old\n+new\n" for p in paths)
+    """A SURGICAL patch: one context line kept, one line added."""
+    hunks = "".join(f"*** {op}: {p}\n@@\n context\n+new\n" for p in paths)
     return f"*** Begin Patch\n{hunks}*** End Patch\n"
+
+
+def wipe_text(path):
+    """An `Update File` hunk that deletes every line the file has — the
+    live 2026-09-05 bypass: a patch that is really a whole-file replace."""
+    body = "".join(f"-{line}\n" for line in
+                   Path(path).read_text(encoding="utf-8").splitlines())
+    return (f"*** Begin Patch\n*** Update File: {path}\n@@\n{body}+x\n"
+            "*** End Patch\n")
 
 
 @pytest.fixture(scope="session")
@@ -150,7 +162,23 @@ def test_shell_tool_never_reaches_the_spawn_guard(sandbox):
     Codex's matcher over-matches."""
     _, repo, tmp = sandbox
     payload = fixture("pre_tool_use_shell", cwd=str(repo))
-    payload["tool_input"]["command"] = ["/bin/zsh", "-lc", "x" * 2000]
+    payload["tool_input"]["command"] = "echo " + "x" * 2000
+    assert run_adapter("ledger_guard_spawn", payload, tmp)[1] is None
+
+
+def test_live_spawn_payload_is_gated_on_the_ciphertext_length(sandbox):
+    """The captured `collaborationspawn_agent` payload, unmodified in
+    shape: `message` is a Fernet ciphertext, so the core's 1500-char
+    delegation gate measures the ciphertext. Long enough -> denied when
+    no ledger exists; the same payload passes once one does."""
+    _, repo, tmp = sandbox
+    payload = fixture("pre_tool_use_spawn", cwd=str(repo))
+    assert payload["tool_name"] == "collaborationspawn_agent"
+    payload["tool_input"]["message"] = "gAAAAAB" + "A" * 2000
+    out = run_adapter("ledger_guard_spawn", payload, tmp)[1]
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    write_ledger(repo)
     assert run_adapter("ledger_guard_spawn", payload, tmp)[1] is None
 
 
@@ -165,12 +193,15 @@ def test_spawn_prompt_read_from_alternate_key(sandbox):
 
 # --- PreToolUse: apply_patch / write ----------------------------------
 
-def test_patch_into_existing_foreign_ledger_is_denied(sandbox):
+def test_patch_replacing_an_existing_foreign_ledger_is_denied(sandbox):
+    """`Delete File` + `Add File` (or `Add File` alone) is apply_patch's
+    whole-file replace — Claude Code's `Write`, and the exact shape that
+    destroyed a live ledger on 2026-09-05."""
     _, repo, tmp = sandbox
     ledger = write_ledger(repo, "LEDGER-other.md")
     write_marker(tmp, started=time.time())  # a session, bound to nothing
     payload = fixture("pre_tool_use_apply_patch", cwd=str(repo))
-    payload["tool_input"]["input"] = patch_text(ledger)
+    payload["tool_input"]["command"] = patch_text(ledger, op="Delete File")
 
     rc, out, _ = run_adapter("ledger_guard_write", payload, tmp)
     hso = out["hookSpecificOutput"]
@@ -180,12 +211,39 @@ def test_patch_into_existing_foreign_ledger_is_denied(sandbox):
     assert "[codex-orchestrator]" in hso["permissionDecisionReason"]
 
 
+def test_surgical_patch_into_a_foreign_ledger_passes(sandbox):
+    """`Update File` is Codex's Edit. Core guards `^Write$` only, so this
+    must pass — and it MUST, or a chair can never touch (and so never
+    bind to) a ledger it did not create this session, which is why every
+    live Codex session logged `stop_suppressed reason=unbound`."""
+    _, repo, tmp = sandbox
+    ledger = write_ledger(repo, "LEDGER-other.md")
+    write_marker(tmp, started=time.time())
+    payload = fixture("pre_tool_use_apply_patch", cwd=str(repo))
+    payload["tool_input"]["command"] = patch_text(ledger, op="Update File")
+    assert run_adapter("ledger_guard_write", payload, tmp)[1] is None
+
+
+def test_update_hunk_that_deletes_the_whole_ledger_is_denied(sandbox):
+    """LIVE BYPASS 2026-09-05: the model read the ledger, then wiped it
+    with a single `*** Update File:` hunk in which every line was a
+    deletion. The op label says "surgical"; the effect is a Write."""
+    _, repo, tmp = sandbox
+    ledger = write_ledger(repo, "LEDGER-other.md",
+                          "# title\n\n- [ ] 1. item\n- [ ] 2. item\n")
+    write_marker(tmp, started=time.time())
+    payload = fixture("pre_tool_use_apply_patch", cwd=str(repo))
+    payload["tool_input"]["command"] = wipe_text(ledger)
+    out = run_adapter("ledger_guard_write", payload, tmp)[1]
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
 def test_patch_into_own_bound_ledger_passes(sandbox):
     _, repo, tmp = sandbox
     ledger = write_ledger(repo, "LEDGER-mine.md")
     write_marker(tmp, started=time.time(), ledger=str(ledger.resolve()))
     payload = fixture("pre_tool_use_apply_patch", cwd=str(repo))
-    payload["tool_input"]["input"] = patch_text(ledger)
+    payload["tool_input"]["command"] = patch_text(ledger, op="Delete File")
     assert run_adapter("ledger_guard_write", payload, tmp)[1] is None
 
 
@@ -194,7 +252,7 @@ def test_patch_creating_a_new_ledger_passes(sandbox):
     (repo / ".workflow").mkdir()
     write_marker(tmp, started=time.time())
     payload = fixture("pre_tool_use_apply_patch", cwd=str(repo))
-    payload["tool_input"]["input"] = patch_text(
+    payload["tool_input"]["command"] = patch_text(
         repo / ".workflow" / "LEDGER-new.md", op="Add File")
     assert run_adapter("ledger_guard_write", payload, tmp)[1] is None
 
@@ -208,7 +266,7 @@ def test_apply_patch_multi_file_paths_are_extracted(adapter_mod, tmp_path):
             "*** Delete File: /abs/c.txt\n"
             "*** Move to: src/b.py\n"
             "*** End Patch\n")
-    paths = adapter_mod.patch_paths({"input": text}, str(tmp_path))
+    paths = adapter_mod.patch_paths({"command": text}, str(tmp_path))
     assert paths == [
         str(tmp_path / "src/a.py"),
         str(tmp_path / ".workflow/LEDGER-topic.md"),
@@ -226,8 +284,8 @@ def test_apply_patch_multi_file_runs_the_guard_on_the_ledger_path(sandbox):
     (repo / "src" / "a.py").write_text("x\n", encoding="utf-8")
     write_marker(tmp, started=time.time())
     payload = fixture("pre_tool_use_apply_patch", cwd=str(repo))
-    payload["tool_input"]["input"] = patch_text(
-        "src/a.py", ledger, "src/b.py")
+    payload["tool_input"]["command"] = patch_text(
+        "src/a.py", ledger, "src/b.py", op="Add File")
 
     rc, out, _ = run_adapter("ledger_guard_write", payload, tmp)
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
@@ -238,8 +296,105 @@ def test_patch_touching_no_ledger_passes(sandbox):
     _, repo, tmp = sandbox
     write_marker(tmp, started=time.time())
     payload = fixture("pre_tool_use_apply_patch", cwd=str(repo))
-    payload["tool_input"]["input"] = patch_text("src/a.py", "src/b.py")
+    payload["tool_input"]["command"] = patch_text("src/a.py", "src/b.py")
     assert run_adapter("ledger_guard_write", payload, tmp)[1] is None
+
+
+# --- PreToolUse: the shell route into apply_patch ---------------------
+#
+# LIVE FAILURE 2026-09-05: the first-party `apply_patch` tool errored,
+# the model piped the same envelope into the arg0 shim from a `Bash`
+# call, and a foreign ledger was overwritten with every PreToolUse hook
+# reporting "Completed". The command carried the path in a shell
+# variable, so the envelope itself only said `*** Update File: $target`.
+
+SHIM = "/Users/x/.codex/tmp/arg0/codex-arg0AbCdEf/apply_patch"
+
+
+def shim_command(target):
+    """The exact shape Codex used live (path in a shell variable)."""
+    return (f"target='{target}'\n{{\n"
+            "  printf '%s\\n' '*** Begin Patch' \"*** Update File: $target\" '@@'\n"
+            "  sed 's/^/-/' \"$target\"\n"
+            "  printf '%s\\n' '+x' '*** End Patch'\n"
+            f"}} | {SHIM} >/tmp/result\n")
+
+
+def test_shell_shim_patch_into_a_foreign_ledger_is_denied(sandbox):
+    _, repo, tmp = sandbox
+    ledger = write_ledger(repo, "LEDGER-other.md")
+    write_marker(tmp, started=time.time())
+    payload = fixture("pre_tool_use_shell", cwd=str(repo))
+    payload["tool_input"]["command"] = shim_command(ledger)
+
+    rc, out, _ = run_adapter("ledger_guard_write", payload, tmp)
+    hso = out["hookSpecificOutput"]
+    assert hso["permissionDecision"] == "deny"
+    assert "LEDGER-other.md" in hso["permissionDecisionReason"]
+    assert "[codex-orchestrator]" in hso["permissionDecisionReason"]
+
+
+def test_shell_redirect_over_a_foreign_ledger_is_denied(sandbox):
+    _, repo, tmp = sandbox
+    ledger = write_ledger(repo, "LEDGER-other.md")
+    write_marker(tmp, started=time.time())
+    payload = fixture("pre_tool_use_shell", cwd=str(repo))
+    payload["tool_input"]["command"] = f"printf 'x\\n' > {ledger}"
+    assert (run_adapter("ledger_guard_write", payload, tmp)[1]
+            ["hookSpecificOutput"]["permissionDecision"] == "deny")
+
+
+def test_shell_append_to_a_foreign_ledger_passes(sandbox):
+    """`>>` is additive — Claude's Edit, not Write."""
+    _, repo, tmp = sandbox
+    ledger = write_ledger(repo, "LEDGER-other.md")
+    write_marker(tmp, started=time.time())
+    payload = fixture("pre_tool_use_shell", cwd=str(repo))
+    payload["tool_input"]["command"] = f"printf 'x\\n' >> {ledger}"
+    assert run_adapter("ledger_guard_write", payload, tmp)[1] is None
+
+
+def test_shell_write_into_the_sessions_own_ledger_passes(sandbox):
+    _, repo, tmp = sandbox
+    ledger = write_ledger(repo, "LEDGER-mine.md")
+    write_marker(tmp, started=time.time(), ledger=str(ledger.resolve()))
+    payload = fixture("pre_tool_use_shell", cwd=str(repo))
+    payload["tool_input"]["command"] = shim_command(ledger)
+    assert run_adapter("ledger_guard_write", payload, tmp)[1] is None
+
+
+@pytest.mark.parametrize("command", [
+    "sed -n '1,240p' .workflow/LEDGER-other.md",
+    "grep -c '\\[ \\]' .workflow/LEDGER-other.md",
+    "git diff -- .workflow/LEDGER-other.md | head",
+    "cp .workflow/LEDGER-other.md /tmp/backup.md",
+    "echo probe && ls .workflow",
+])
+def test_reading_a_ledger_from_the_shell_is_never_denied(sandbox, command):
+    """A false positive here DENIES an ordinary shell call — the
+    detector must stay narrow."""
+    _, repo, tmp = sandbox
+    write_ledger(repo, "LEDGER-other.md")
+    write_marker(tmp, started=time.time())
+    payload = fixture("pre_tool_use_shell", cwd=str(repo))
+    payload["tool_input"]["command"] = command
+    assert run_adapter("ledger_guard_write", payload, tmp)[1] is None
+
+
+def test_shell_write_targets_unit(adapter_mod, tmp_path):
+    f = adapter_mod.shell_write_targets
+    a = str(tmp_path / ".workflow/LEDGER-a.md")
+    b = str(tmp_path / ".workflow/LEDGER-b.md")
+    R, E = adapter_mod.REPLACE, adapter_mod.EDIT
+    assert f("printf x > .workflow/LEDGER-a.md", str(tmp_path)) == [(a, R)]
+    assert f("printf x >> .workflow/LEDGER-a.md", str(tmp_path)) == [(a, E)]
+    assert f("cat x | tee .workflow/LEDGER-b.md", str(tmp_path)) == [(b, R)]
+    assert f("cat x | tee -a .workflow/LEDGER-b.md", str(tmp_path)) == [(b, E)]
+    assert f("sed -i '' s/a/b/ .workflow/LEDGER-a.md", str(tmp_path)) == [(a, E)]
+    # archived and non-ledger names are not this guard's business
+    assert f("printf x > .workflow/LEDGER-a-archive.md", str(tmp_path)) == []
+    assert f("printf x > notes.md", str(tmp_path)) == []
+    assert f("cat .workflow/LEDGER-a.md", str(tmp_path)) == []
 
 
 # --- PostToolUse: ledger_bind -----------------------------------------
@@ -249,12 +404,61 @@ def test_post_tool_use_binds_the_session_to_the_ledger(sandbox):
     ledger = write_ledger(repo, "LEDGER-bound.md")
     marker = write_marker(tmp, started=time.time())
     payload = fixture("post_tool_use_apply_patch", cwd=str(repo))
-    payload["tool_input"]["input"] = patch_text("src/a.py", ledger)
+    payload["tool_input"]["command"] = patch_text("src/a.py", ledger)
 
     rc, out, _ = run_adapter("ledger_bind", payload, tmp)
     assert (rc, out) == (0, None)  # binding is silent
     bound = json.loads(marker.read_text(encoding="utf-8"))["ledger"]
     assert os.path.realpath(bound) == os.path.realpath(str(ledger))
+
+
+def test_post_tool_use_binds_through_the_shell_route(sandbox):
+    """LIVE FAILURE 2026-09-05: every Codex session logged
+    `stop_suppressed reason=unbound` because nothing ever bound it — the
+    binder read `tool_input.file_path`, which an apply_patch (tool OR
+    shell shim) payload never has. Both routes must bind."""
+    _, repo, tmp = sandbox
+    ledger = write_ledger(repo, "LEDGER-bound.md")
+    marker = write_marker(tmp, started=time.time())
+    payload = fixture("post_tool_use_shell", cwd=str(repo))
+    payload["tool_input"]["command"] = shim_command(ledger)
+    payload["tool_response"] = "apply_patch completed\n"
+
+    assert run_adapter("ledger_bind", payload, tmp)[1] is None
+    bound = json.loads(marker.read_text(encoding="utf-8"))["ledger"]
+    assert os.path.realpath(bound) == os.path.realpath(str(ledger))
+
+
+def test_an_ordinary_shell_call_binds_nothing(sandbox):
+    _, repo, tmp = sandbox
+    write_ledger(repo, "LEDGER-other.md")
+    marker = write_marker(tmp, started=time.time())
+    payload = fixture("post_tool_use_shell", cwd=str(repo))
+    payload["tool_input"]["command"] = "grep -c x .workflow/LEDGER-other.md"
+    run_adapter("ledger_bind", payload, tmp)
+    assert "ledger" not in json.loads(marker.read_text(encoding="utf-8"))
+
+
+def test_bind_then_stop_blocks_the_open_ledger(sandbox):
+    """End-to-end for the `unbound` failure: patch the ledger, then try
+    to stop. One block, then the retry passes — the same sequence the
+    live `codex exec` run must produce."""
+    _, repo, tmp = sandbox
+    ledger = write_ledger(repo, "LEDGER-open.md",
+                          "- [x] 1. done\n- [ ] 2. still open\n")
+    write_marker(tmp, started=time.time())
+
+    # unbound: the Stop guard must NOT block (parity with Claude Code)
+    assert run_adapter("ledger_guard_stop",
+                       fixture("stop", cwd=str(repo)), tmp)[1] is None
+
+    post = fixture("post_tool_use_apply_patch", cwd=str(repo))
+    post["tool_input"]["command"] = patch_text(ledger, op="Update File")
+    run_adapter("ledger_bind", post, tmp)
+
+    out = run_adapter("ledger_guard_stop", fixture("stop", cwd=str(repo)), tmp)[1]
+    assert out["decision"] == "block"
+    assert "LEDGER GUARD" in out["reason"]
 
 
 # --- Stop -------------------------------------------------------------
@@ -289,8 +493,8 @@ def test_stop_with_all_items_closed_passes(sandbox):
 
 def test_session_start_injects_the_profile(sandbox):
     _, repo, tmp = sandbox
-    rc, out, _ = run_adapter("inject_instructions",
-                             fixture("session_start", cwd=str(repo)), tmp)
+    payload = fixture("session_start", cwd=str(repo), model="gpt-6-astra")
+    rc, out, _ = run_adapter("inject_instructions", payload, tmp)
     assert rc == 0
     hso = out["hookSpecificOutput"]
     assert hso["hookEventName"] == "SessionStart"
@@ -407,6 +611,7 @@ def test_metrics_stamp_leaves_earlier_lines_alone(sandbox):
 # --- tool-name map ----------------------------------------------------
 
 @pytest.mark.parametrize("codex_name,claude_name", [
+    ("Bash", "Bash"),       # the live shell tool name
     ("shell", "Bash"),
     ("exec", "Bash"),
     ("local_shell", "Bash"),
@@ -421,19 +626,22 @@ def test_tool_name_map(adapter_mod, codex_name, claude_name):
     assert adapter_mod.canonical_tool(codex_name) == claude_name
 
 
-def test_post_tool_use_calls_a_patch_an_edit(adapter_mod):
-    """apply_patch is a Write at PreToolUse (the guard's stricter
-    reading) but an Edit at PostToolUse, where only the binding matters."""
-    _, pre = adapter_mod.normalise(
-        {"hook_event_name": "PreToolUse", "tool_name": "apply_patch",
-         "cwd": "/repo", "tool_input": {"input": patch_text("a.md")}},
-        "ledger_guard_write")
-    _, post = adapter_mod.normalise(
-        {"hook_event_name": "PostToolUse", "tool_name": "apply_patch",
-         "cwd": "/repo", "tool_input": {"input": patch_text("a.md")}},
-        "ledger_bind")
-    assert pre[0]["tool_name"] == "Write"
-    assert post[0]["tool_name"] == "Edit"
+def test_apply_patch_is_a_write_or_an_edit_per_op(adapter_mod):
+    """The write guard sees only whole-file replaces (Claude `Write`);
+    a surgical `Update File` hunk never reaches it. PostToolUse takes
+    both, as Edit — any successful write binds the session."""
+    def norm(event, guard, op):
+        return adapter_mod.normalise(
+            {"hook_event_name": event, "tool_name": "apply_patch",
+             "cwd": "/repo",
+             "tool_input": {"command": patch_text("a.md", op=op)}}, guard)[1]
+
+    replace = norm("PreToolUse", "ledger_guard_write", "Add File")
+    assert [p["tool_name"] for p in replace] == ["Write"]
+    assert norm("PreToolUse", "ledger_guard_write", "Update File") == []
+    for op in ("Add File", "Update File"):
+        post = norm("PostToolUse", "ledger_bind", op)
+        assert [p["tool_name"] for p in post] == ["Edit"]
 
 
 # --- robustness -------------------------------------------------------
@@ -479,6 +687,21 @@ def test_hooks_manifest_covers_every_guard(adapter_mod):
         assert adapter_mod.GUARDS[guard]["event"] == event
 
 
+def test_context_carrying_hooks_raise_the_context_limit():
+    """Codex truncates `additionalContext` at 2500 chars by default; the
+    injected chair profile is several times that (verified live — the
+    full profile only reached the transcript once the limit was set)."""
+    manifest = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))["hooks"]
+    for event in ("SessionStart", "UserPromptSubmit"):
+        for entry in manifest[event]:
+            for hook in entry["hooks"]:
+                assert hook["additionalContextLimit"] >= 10000
+    # SessionEnd is clamped to 3s by Codex; asking for more is a lie.
+    for entry in manifest["SessionEnd"]:
+        for hook in entry["hooks"]:
+            assert hook["timeout"] <= 3
+
+
 def test_hooks_manifest_has_windows_commands():
     manifest = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))["hooks"]
     for entries in manifest.values():
@@ -512,4 +735,5 @@ def test_hooks_manifest_matchers_accept_the_mapped_tool_names(adapter_mod):
            for e in manifest["PreToolUse"]}
     assert re.match(pre["ledger_guard_write"], "apply_patch")
     assert re.match(pre["ledger_guard_spawn"], "SpawnAgent")
-    assert not re.match(pre["ledger_guard_write"], "shell")
+    assert re.match(pre["ledger_guard_write"], "Bash")  # the shell write route
+    assert not re.match(pre["ledger_guard_write"], "SpawnAgent")

@@ -38,15 +38,25 @@ Configuration (this file; the core's own knobs still apply):
     CODEX_ADAPTER_EXIT2=1          signal deny/block via exit code 2 +
                                    stderr instead of stdout JSON
     CODEX_ADAPTER_DEBUG=<path>     append raw + normalised payloads to a
-                                   JSONL file (how to verify live)
+                                   JSONL file (how to verify live); the
+                                   value `1` means $TMPDIR/codex-adapter-debug.jsonl
 
-UNVERIFIED LIVE: as of 2026-09-05 no Codex hook has ever fired on this
-machine (the CLI gates hooks behind a persisted trust decision that
-needs an interactive accept — see the P1 protocol probe). Everything
-below is built against the documented payloads in
-`.workflow/scratch/codex-probe/protocol.md`; the places where the docs
-are silent are marked `# GUESS:` and are all tolerant (candidate key
-lists, not single hard-coded names).
+VERIFIED LIVE 2026-09-05 against Codex CLI 0.153.4 (payloads captured in
+`.workflow/scratch/codex-probe/probe.log`, replayed as
+`tests/fixtures/*.json`). Two live facts drive the shape of this file:
+
+  * The Codex payload IS the Claude payload — same key names, same
+    `hook_event_name` values, plus `turn_id` / `tool_use_id`. The shell
+    tool is called `Bash` (not `shell`/`exec`), the patch tool is
+    `apply_patch`, and its body arrives in `tool_input["command"]` —
+    NOT in a `patch`/`input`/`diff` key.
+  * Codex ALSO writes files through the shell: when the first-party
+    `apply_patch` tool errors, the model pipes the same envelope into
+    the `apply_patch` arg0 shim from a `Bash` call (observed, see
+    `shell_write_targets`). A write guard that only watches the
+    `apply_patch` tool is trivially routed around, so the PreToolUse
+    write guard and the PostToolUse binder both inspect `Bash`
+    commands too.
 """
 import json
 import os
@@ -79,7 +89,18 @@ TOOL_NAME_MAP = {
     "write": "Write",
     "edit": "Edit",
     "multiedit": "MultiEdit",
-    # subagent spawn (Codex `Collab` feature)  ->  Agent
+    # subagent spawn  ->  Agent. LIVE (feature `multi_agent_v2`,
+    # 2026-09-05): the tool name reaches the hook as the single token
+    # `collaborationspawn_agent`, with `{task_name, agent_type,
+    # fork_turns, message}` as its input — and `message` is a FERNET
+    # CIPHERTEXT, not the prompt. The core's spawn gate only measures
+    # its LENGTH (>1500 chars = "a real delegation"), and base64'd
+    # ciphertext is ~1.4x the plaintext, so the gate still fires — one
+    # notch early, never late. There is no way to read the prompt, so
+    # the gate is length-only under Codex by construction.
+    "collaborationspawn_agent": "Agent",
+    "collaboration_spawn_agent": "Agent",
+    "collaborationwait_agent": None,   # waiting is not spawning
     "spawnagent": "Agent",
     "spawn_agent": "Agent",
     "collab_spawnagent": "Agent",
@@ -94,10 +115,12 @@ TOOL_NAME_MAP = {
     "workflow": "Workflow",
 }
 
-# apply_patch is surgical like Claude's Edit, but it can also replace a
-# file wholesale, so at PreToolUse it is treated as a Write (the write
-# guard's protection is worth the stricter reading). At PostToolUse only
-# the binding matters and the honest name is Edit.
+# apply_patch is BOTH of Claude's write tools depending on the op in the
+# envelope — see PATCH_OP_KIND: `Update File` is an Edit, `Add`/`Delete`/
+# `Move to` replace the file wholesale and are a Write. The family name
+# here is only the coarse first step; `map_tool_input` does the per-path
+# refinement. At PostToolUse the distinction is moot (any successful
+# write binds), and the honest name is Edit.
 EVENT_TOOL_ALIAS = {
     ("PostToolUse", "Write"): "Edit",
 }
@@ -121,14 +144,18 @@ GUARDS = {
         "event": "PreToolUse",
         "tools": ("Agent", "Task", "Workflow", "TaskCreate"), "timeout": 10,
     },
+    # "Bash" is in both write-side tool sets on purpose: Codex's
+    # apply_patch is ALSO reachable as a shell binary, and the model
+    # falls back to it the moment the first-party tool errors (live
+    # 2026-09-05). See `shell_write_targets`.
     "ledger_guard_write": {
         "script": "ledger_guard_write.py",
-        "event": "PreToolUse", "tools": ("Write",), "timeout": 10,
+        "event": "PreToolUse", "tools": ("Write", "Bash"), "timeout": 10,
     },
     "ledger_bind": {
         "script": "ledger_bind.py",
         "event": "PostToolUse",
-        "tools": ("Write", "Edit", "MultiEdit"), "timeout": 10,
+        "tools": ("Write", "Edit", "MultiEdit", "Bash"), "timeout": 10,
     },
     "ledger_guard_stop": {
         "script": "ledger_guard_stop.py",
@@ -159,32 +186,85 @@ MODEL_PROFILE_MAP = {
 }
 
 # --- data: where the pieces of a Codex tool_input live ----------------
-# GUESS: the probe never fired, so each of these is a candidate list
-# rather than one documented key. First non-empty match wins.
+# `command` is the LIVE key for both tools: `Bash` carries the shell
+# line there and `apply_patch` carries the whole patch envelope there
+# (verified 2026-09-05). The rest of each list is defensive tolerance
+# for other spellings; first non-empty match wins.
 COMMAND_KEYS = ("command", "cmd", "argv", "script")
-PATCH_TEXT_KEYS = ("patch", "input", "content", "text", "diff", "patch_text")
+PATCH_TEXT_KEYS = ("patch", "patch_text", "diff", "input", "content", "text",
+                   "command")
 PATH_KEYS = ("file_path", "path", "filename", "file", "target_path")
-PROMPT_KEYS = ("prompt", "task", "instructions", "input", "message",
+PROMPT_KEYS = ("prompt", "message", "task", "instructions", "input",
                "developer_instructions", "description")
-AGENT_KEYS = ("subagent_type", "agent", "agent_name", "agent_type", "name")
+AGENT_KEYS = ("subagent_type", "agent_type", "agent", "agent_name", "name")
 
-# `*** Add File: x` / `*** Update File: x` / `*** Delete File: x` /
-# `*** Move to: x` — the apply_patch envelope, plus a unified-diff
-# fallback for a tool that hands over a plain patch.
-PATCH_FILE_RE = re.compile(
-    r"^\*\*\*\s+(?:Add|Update|Delete)\s+File:\s*(.+?)\s*$", re.M)
-PATCH_MOVE_RE = re.compile(r"^\*\*\*\s+Move\s+to:\s*(.+?)\s*$", re.M)
+# The apply_patch envelope is parsed section by section (`parse_patch`),
+# because the hunk BODY decides whether an Update is surgical. This is
+# only the fallback for a tool that hands over a plain unified diff.
 UNIFIED_DIFF_RE = re.compile(r"^\+\+\+\s+(?:b/)?(.+?)\s*$", re.M)
+
+# How an operation compares to Claude Code's two write tools, which is
+# what decides whether the core write guard may see it at all:
+#
+#   REPLACE  whole-file replace  ->  Claude `Write`  ->  guarded
+#   EDIT     surgical change     ->  Claude `Edit`   ->  NOT guarded
+#
+# `*** Update File:` is apply_patch's surgical form and is therefore an
+# Edit. Mapping it to Write (as this adapter first did) deadlocks the
+# harness: the chair may not touch a ledger it did not create, so it
+# never binds, so the Stop guard is inert forever — exactly the
+# `stop_suppressed reason=unbound` seen live on 2026-09-05.
+#
+# The op label alone is NOT enough, though: live on 2026-09-05 a model
+# that had read the ledger first wiped it with a single
+# `*** Update File:` hunk whose every line was a deletion. So an Update
+# counts as a REPLACE when nothing of the original survives it — see
+# `_patch_kind`. That is one notch stricter than Claude Code (whose
+# Edit tool could do the same unguarded) and is the deliberate
+# divergence documented in the README.
+REPLACE, EDIT = "replace", "edit"
+PATCH_OP_KIND = {"add": REPLACE, "delete": REPLACE, "move": REPLACE,
+                 "write": REPLACE, "update": EDIT}
+# Section headers of an apply_patch envelope, in the order they appear.
+PATCH_SECTIONS = (("*** Add File:", "add"), ("*** Update File:", "update"),
+                  ("*** Delete File:", "delete"), ("*** Move to:", "move"))
+
+# --- shell-route write detection --------------------------------------
+#
+# Codex exposes apply_patch TWICE: as a first-party tool and as an arg0
+# shim binary the model can pipe a patch into from a `Bash` call. Live
+# on 2026-09-05 the model did exactly that after the tool call errored,
+# and overwrote a foreign ledger the PreToolUse write guard never saw.
+# These three patterns re-attach that route to the guard.
+#
+# A path token ending in a live-ledger basename, anywhere in the line —
+# NOT only in the patch envelope, because the observed command put the
+# path in a shell variable (`target=...` / `*** Update File: $target`).
+SHELL_LEDGER_PATH_RE = re.compile(
+    r"""[^\s'"`|;&<>()]*ledger[^\s'"`|;&<>()/]*\.md""", re.I)
+# The command is a patch application: an envelope, or the shim by name.
+PATCH_ENVELOPE_RE = re.compile(
+    r"\*\*\*\s+Begin\s+Patch|(?<![\w.-])apply_patch(?![\w-])")
+# What sits immediately in front of a path token, and what it does to it.
+# `> p` / `tee p` truncate (REPLACE); `>> p` / `tee -a p` append (EDIT).
+TRUNCATING_BEFORE_RE = re.compile(
+    r"(?:(?<!>)>|\btee\b(?:\s+-{1,2}(?!a)\w+)*)\s*['\"]?$")
+APPENDING_BEFORE_RE = re.compile(
+    r"(?:>>|\btee\b(?:\s+-{1,2}\w+)*\s+-a\b|\btee\b\s+-a)\s*['\"]?$")
+# In-place edit: sed -i / sed -i.bak is surgical, i.e. an Edit.
+SED_INPLACE_RE = re.compile(r"\bsed\b[^|;&]*\s-i(?:\.\w+)?(?:\s|$)")
 
 # Appended to the write guard's deny reason under Codex: the core text
 # tells the chair to "use Edit rather than Write", and Codex has no Edit
 # tool to switch to. Additive on purpose — a substring rewrite of core
 # prose would silently rot on the next `make pull-core`.
 CODEX_WRITE_NOTE = (
-    " [codex-orchestrator] In Codex this was an apply_patch: there is no "
-    "separate Edit tool, so \"use Edit\" means keep the patch to the hunks "
-    "this session owns, or write a fresh ./.workflow/LEDGER-<topic>.md. "
-    "The guard only ever fires on live .workflow/LEDGER*.md files."
+    " [codex-orchestrator] In Codex this was an apply_patch (tool or "
+    "shell shim): there is no separate Edit tool, so \"use Edit\" means "
+    "keep the patch to the hunks this session owns, or write a fresh "
+    "./.workflow/LEDGER-<topic>.md. Routing the same write through the "
+    "shell is guarded too — do not try it. The guard only ever fires on "
+    "live .workflow/LEDGER*.md files."
 )
 
 HARNESS = (os.environ.get("CODEX_ADAPTER_HARNESS") or "codex").strip() or "codex"
@@ -253,34 +333,138 @@ def _is_live_ledger_name(name):
     return not (low.endswith("-archive.md") or low.endswith("_archive.md"))
 
 
-def patch_paths(tool_input, cwd):
-    """Every file path an apply_patch payload touches, absolutised.
-
-    Order is preserved and duplicates dropped. An explicit path key on
-    the tool_input (a `write_file`-shaped tool) wins over parsing."""
-    direct = _first_str(tool_input, PATH_KEYS)
-    text = _first_str(tool_input, PATCH_TEXT_KEYS) or ""
-    found = []
-    if direct:
-        found.append(direct)
-    found.extend(PATCH_FILE_RE.findall(text))
-    found.extend(PATCH_MOVE_RE.findall(text))
-    if not found:
-        found.extend(p for p in UNIFIED_DIFF_RE.findall(text)
-                     if p != "/dev/null")
-    out = []
-    for p in found:
-        p = p.strip().strip('"')
+def _absolutise(pairs, cwd):
+    """[(path, kind)] -> same, absolutised, order kept, first kind wins."""
+    out, seen = [], {}
+    for p, kind in pairs:
+        p = str(p).strip().strip('"')
         if not p:
             continue
         if not os.path.isabs(p) and isinstance(cwd, str) and cwd:
             p = os.path.join(cwd, p)
-        if p not in out:
-            out.append(p)
+        if p in seen:
+            continue
+        seen[p] = kind
+        out.append((p, kind))
     return out
 
 
-def map_tool_input(claude_tool, tool_input, cwd):
+def parse_patch(text):
+    """An apply_patch envelope -> [(op, path, body_lines)], in order."""
+    out, cur = [], None
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        for prefix, op in PATCH_SECTIONS:
+            if stripped.startswith(prefix):
+                cur = (op, stripped[len(prefix):].strip(), [])
+                out.append(cur)
+                break
+        else:
+            if stripped.startswith("*** Begin Patch") or \
+                    stripped.startswith("*** End Patch"):
+                cur = None
+            elif cur is not None:
+                cur[2].append(line)
+    return out
+
+
+def _patch_kind(op, path, body):
+    """REPLACE or EDIT for one parsed patch section.
+
+    An `Update File` is surgical — UNLESS its hunks delete every line
+    the target has on disk, which is a whole-file replace wearing a
+    patch's clothes (observed live). Anything unreadable answers EDIT:
+    the guard's own existence check will sort it out, and a false
+    REPLACE would deny a legitimate patch."""
+    kind = PATCH_OP_KIND.get(op, REPLACE)
+    if kind is not EDIT:
+        return kind
+    deleted = sum(1 for line in body if line.startswith("-"))
+    if not deleted:
+        return EDIT
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            total = sum(1 for _ in f)
+    except Exception:
+        return EDIT
+    return REPLACE if total and deleted >= total else EDIT
+
+
+def patch_targets(tool_input, cwd):
+    """Every file an apply_patch payload touches, as (path, kind).
+
+    `kind` is REPLACE or EDIT — see PATCH_OP_KIND and `_patch_kind`. An
+    explicit path key on the tool_input (a `write_file`-shaped tool,
+    i.e. a real whole-file write) wins over parsing and is a REPLACE."""
+    direct = _first_str(tool_input, PATH_KEYS)
+    text = _first_str(tool_input, PATCH_TEXT_KEYS) or ""
+    sections = []
+    if direct:
+        sections.append(("write", direct, []))
+    sections.extend(parse_patch(text))
+    if not sections:
+        sections = [("update", p, []) for p in UNIFIED_DIFF_RE.findall(text)
+                    if p != "/dev/null"]
+
+    found = []
+    for op, path, body in sections:
+        path = str(path).strip().strip('"')
+        if not path:
+            continue
+        if not os.path.isabs(path) and isinstance(cwd, str) and cwd:
+            path = os.path.join(cwd, path)
+        found.append((path, _patch_kind(op, path, body)))
+    return _absolutise(found, cwd)
+
+
+def patch_paths(tool_input, cwd):
+    """Just the paths of `patch_targets`, order preserved."""
+    return [p for p, _ in patch_targets(tool_input, cwd)]
+
+
+def shell_write_targets(command, cwd):
+    """Live ledgers a shell command writes, as (path, kind).
+
+    Deliberately narrow: a false positive DENIES a shell call, so only
+    shapes that unambiguously write are recognised —
+
+        REPLACE  `> p`, `tee p`, or ANY piped apply_patch (envelope or
+                 the arg0 shim by name; every live-ledger path in the
+                 command counts, because the observed real command
+                 passed the path through a shell variable and its
+                 declared `Update File:` op still replaced the file)
+        EDIT     `>> p`, `tee -a p`, `sed -i ... p`
+
+    Everything else — `grep`/`sed -n`/`cat` on a ledger, `cp`/`mv` with
+    a ledger as SOURCE, a python one-liner that opens it for writing —
+    is not recognised as a write at all. The guard is a discipline
+    reminder, not a sandbox; the remaining routes are documented in the
+    README rather than guessed at.
+    """
+    text = str(command or "")
+    if not text:
+        return []
+    hits = [(m.start(), m.group(0)) for m in SHELL_LEDGER_PATH_RE.finditer(text)
+            if _is_live_ledger_name(os.path.basename(m.group(0)))]
+    if not hits:
+        return []
+    patchy = bool(PATCH_ENVELOPE_RE.search(text))
+    sedded = bool(SED_INPLACE_RE.search(text))
+    found = []
+    for start, p in hits:
+        before = text[max(0, start - 32):start]
+        if APPENDING_BEFORE_RE.search(before):
+            found.append((p, EDIT))
+        elif TRUNCATING_BEFORE_RE.search(before):
+            found.append((p, REPLACE))
+        elif patchy:
+            found.append((p, REPLACE))
+        elif sedded:
+            found.append((p, EDIT))
+    return _absolutise(found, cwd)
+
+
+def map_tool_input(claude_tool, tool_input, cwd, guard=None):
     """Codex tool_input -> the Claude tool_input shape the guards read.
 
     Returns a LIST: one apply_patch call can touch several files, and
@@ -290,6 +474,13 @@ def map_tool_input(claude_tool, tool_input, cwd):
     the guard's own filtering authoritative."""
     if claude_tool == "Bash":
         cmd = _first_str(tool_input, COMMAND_KEYS) or ""
+        if guard in ("ledger_guard_write", "ledger_bind"):
+            # The shell route into apply_patch: hand the path-based
+            # guards one payload per ledger the command writes, and
+            # nothing at all when it writes none.
+            return [{"file_path": p}
+                    for p, kind in shell_write_targets(cmd, cwd)
+                    if guard == "ledger_bind" or kind == REPLACE]
         return [{"command": cmd}]
     if claude_tool in ("Agent", "Task"):
         out = {"prompt": _first_str(tool_input, PROMPT_KEYS) or ""}
@@ -302,10 +493,18 @@ def map_tool_input(claude_tool, tool_input, cwd):
     if claude_tool == "TaskCreate":
         return [dict(tool_input)]
     if claude_tool in ("Write", "Edit", "MultiEdit"):
-        paths = patch_paths(tool_input, cwd)
-        ledgers = [p for p in paths if _is_live_ledger_name(os.path.basename(p))]
-        targets = ledgers or paths[:1]
-        return [{"file_path": p} for p in targets]
+        targets = patch_targets(tool_input, cwd)
+        if guard == "ledger_guard_write":
+            # Only whole-file replaces reach the write guard — the same
+            # scope as core's `^Write$` matcher. A surgical
+            # `*** Update File:` hunk is Codex's Edit and must pass, or
+            # no session can ever continue (let alone bind to) a ledger
+            # it did not create in this very session.
+            targets = [t for t in targets if t[1] == REPLACE]
+        ledgers = [p for p, _ in targets
+                   if _is_live_ledger_name(os.path.basename(p))]
+        chosen = ledgers or [p for p, _ in targets[:1]]
+        return [{"file_path": p} for p in chosen]
     return [dict(tool_input)]
 
 
@@ -340,12 +539,19 @@ def normalise(payload, guard):
         return codex_event, []
     if claude_tool is None:
         return codex_event, []
-    claude_tool = EVENT_TOOL_ALIAS.get((spec["event"], claude_tool), claude_tool)
+
+    # A Bash call reaching a path-based guard is the shell route into
+    # apply_patch: it is emitted as the write tool it really is, while
+    # map_tool_input still needs to see "Bash" to parse the command.
+    if claude_tool == "Bash" and guard in ("ledger_guard_write", "ledger_bind"):
+        emit_tool = "Write" if spec["event"] == "PreToolUse" else "Edit"
+    else:
+        emit_tool = EVENT_TOOL_ALIAS.get((spec["event"], claude_tool), claude_tool)
 
     payloads = []
-    for mapped in map_tool_input(claude_tool, tool_input, base.get("cwd")):
+    for mapped in map_tool_input(claude_tool, tool_input, base.get("cwd"), guard):
         item = dict(base)
-        item["tool_name"] = claude_tool
+        item["tool_name"] = emit_tool
         item["tool_input"] = mapped
         payloads.append(item)
     return codex_event, payloads
@@ -476,10 +682,11 @@ def to_codex(result, codex_event, guard, codex_tool=None):
         # stamps the Claude one. They coincide today, but the adapter
         # owns the value either way.
         hso["hookEventName"] = codex_event
+        # Every write-guard deny under Codex gets the note: the core's
+        # "use Edit rather than Write" has no referent in a harness whose
+        # only write tools are apply_patch and the shell.
         if (guard == "ledger_guard_write"
-                and hso.get("permissionDecision") == "deny"
-                and canonical_tool(codex_tool) == "Write"
-                and str(codex_tool or "").lower().startswith("apply")):
+                and hso.get("permissionDecision") == "deny"):
             reason = hso.get("permissionDecisionReason")
             if isinstance(reason, str):
                 hso["permissionDecisionReason"] = reason + CODEX_WRITE_NOTE
@@ -513,6 +720,11 @@ def _debug(record):
     path = (os.environ.get("CODEX_ADAPTER_DEBUG") or "").strip()
     if not path:
         return
+    if path.lower() in ("1", "true", "yes", "on"):
+        # Someone will inevitably set this like a boolean; do not drop a
+        # file called `1` into their repo root (observed 2026-09-05).
+        import tempfile
+        path = os.path.join(tempfile.gettempdir(), "codex-adapter-debug.jsonl")
     try:
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, default=str) + "\n")
