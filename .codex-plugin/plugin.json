@@ -1,0 +1,14 @@
+{
+  "name": "codex-orchestrator",
+  "version": "0.1.0",
+  "description": "Token-frugal multi-agent orchestration for Codex CLI: the same Requirements Ledger, guard hooks and tier-routed chair/worker discipline as the Claude Code orchestrator plugin, vendored from a shared core and adapted to Codex's native hooks/agents/skills.",
+  "author": {
+    "name": "Yusuf Demirkoparan",
+    "url": "https://github.com/Rylaa"
+  },
+  "homepage": "https://github.com/Shredi/codex-orchestrator",
+  "repository": "https://github.com/Shredi/codex-orchestrator",
+  "license": "MIT",
+  "keywords": ["orchestrator", "codex", "multi-agent", "ledger"],
+  "skills": "./skills/"
+}

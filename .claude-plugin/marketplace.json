@@ -1,0 +1,15 @@
+{
+  "name": "codex-orchestrator",
+  "description": "Codex CLI orchestrator: the Claude-side fable-orchestrator discipline (Requirements Ledger, guard hooks, tier-routed chair/worker profiles) ported to Codex's native hooks, subagent TOML files and skills, sharing a vendored core with the Claude Code plugin.",
+  "owner": {
+    "name": "Yusuf Demirkoparan",
+    "url": "https://github.com/Rylaa"
+  },
+  "plugins": [
+    {
+      "name": "codex-orchestrator",
+      "source": "./",
+      "description": "Token-frugal multi-agent orchestration for Codex CLI, vendored from the fable5-opus5-orchestrator core."
+    }
+  ]
+}
