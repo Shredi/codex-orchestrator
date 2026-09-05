@@ -38,11 +38,9 @@ codex-orchestrator/          this repo — vendors core/ via git subtree,
   own `.github/`, `.claude-plugin/`, top-level `README.md`/`LICENSE` duplicated
   inside `core/`) are harmless dead weight, left in place rather than pruned
   by hand (pruning would fight every future `pull-core`).
-- `scripts/codex_adapter.py` + `hooks/hooks.json` — **not present yet**.
-  These are a separate ledger item (Codex payload → Claude payload → core
-  guard → Codex output, tool-name mapping), built against the P1 protocol
-  probe dump once that lands. Until then this plugin has no hooks — `core/`
-  and the tier/profile/sync tooling below are usable standalone.
+- `scripts/codex_adapter.py` + `hooks/hooks.json` — the hook layer: Codex
+  payload → Claude payload → core guard → Codex output, with the tool-name
+  map. See **"The adapter"** below.
 - `agents/{sonnet,opus,fable}.toml` — tier subagents, generated from
   `profiles/openai.toml` (committed as the openai-profile output; regenerate
   with `codex-sync` if the profile changes).
@@ -51,8 +49,123 @@ codex-orchestrator/          this repo — vendors core/ via git subtree,
   from `<repo>/.claude/agents/*.md`, an `AGENTS.md` stub, the `~/.agents/skills`
   symlink farm, and an `[mcp_servers]` snippet from the Claude MCP config.
 - `tests/` — `codex-sync` unit tests (frontmatter translation, idempotency,
-  dry-run, AGENTS.md never-overwritten, secret redaction) and profile schema
-  tests. `core/tests/` (vendored, unmodified) proves core/ itself.
+  dry-run, AGENTS.md never-overwritten, secret redaction), profile schema
+  tests, and the adapter tests (`test_adapter.py` + `fixtures/`).
+  `core/tests/` (vendored, unmodified) proves core/ itself.
+
+## The adapter
+
+`scripts/codex_adapter.py <guard-name>` is the whole Codex↔core bridge —
+one process per hook fire, stdlib only, and the only place a harness
+difference is ever absorbed. `core/` is a subtree and is **never** edited
+here; a core fix goes upstream, gets tagged, and comes back via
+`make pull-core`.
+
+```
+Codex hook stdin JSON
+  └─ normalise → the Claude Code payload the guard was written against
+        (session_id, cwd, transcript_path, prompt, source, model,
+         stop_hook_active, tool_name, tool_input, hook_event_name)
+  └─ subprocess: core/scripts/<guard>.py   (unmodified, CLAUDE_PLUGIN_ROOT=core/)
+  └─ translate stdout → Codex output schema, exit 0
+```
+
+**Guards and events** (`hooks/hooks.json`, one entry each; `command` =
+`python3 "${CODEX_PLUGIN_ROOT}/scripts/codex_adapter.py" <guard>`,
+`commandWindows` = the same with `python` and backslashes, for MGMT01):
+
+| Codex event | guard | output |
+|---|---|---|
+| SessionStart | `inject_instructions` | `additionalContext` |
+| UserPromptSubmit | `cold_cache_guard` | `decision: block` (+ 3-min re-send ack) |
+| PreToolUse (spawn tools) | `ledger_guard_spawn` | `permissionDecision: deny` |
+| PreToolUse (apply_patch) | `ledger_guard_write` | `permissionDecision: deny` |
+| PostToolUse (apply_patch) | `ledger_bind` | none (session↔ledger binding) |
+| Stop | `ledger_guard_stop` | `decision: block`, once per session |
+| SessionEnd | `cleanup_session_cache` | none |
+
+**Tool-name map** (data at the top of the adapter, `TOOL_NAME_MAP`):
+shell/`exec`/`local_shell`/`container.exec` → `Bash`; `apply_patch` (and
+`write_file`/`edit_file` spellings) → `Write` at PreToolUse, `Edit` at
+PostToolUse; `SpawnAgent`/`collab__spawn_agent`/`create_agent` → `Agent`
+with the spawn prompt mapped onto `tool_input.prompt`, so the spawn
+guard's 1500-char gate and its `subagent_type: fork` bypass both work.
+For `apply_patch` the adapter parses the patch envelope
+(`*** Add/Update/Delete File:`, `*** Move to:`, unified-diff `+++` as a
+fallback), absolutises each path against `cwd`, and runs the guard **once
+per LEDGER-matching path** — a patch touching five files still gets its
+ledger path checked, not just the first hunk.
+
+The hooks.json matchers are Claude-style anchored regexes over the Codex
+tool names, **and** the adapter re-checks the mapped tool name in-process
+(`CODEX_ADAPTER_TOOL_GATE=0` disables), because Codex's matcher syntax is
+not verified live: an over-matching matcher still behaves, an
+under-matching one is the risk to watch.
+
+**Divergences from the Claude harness, on purpose:**
+
+- `apply_patch` is treated as a `Write` at PreToolUse even though it is
+  surgical like `Edit`. It *can* replace a file wholesale and Codex has
+  no second write tool to fall back to, so the ledger keeps the stricter
+  protection; the deny reason gets a `[codex-orchestrator]` note appended
+  explaining what "use Edit" means in this harness (appended, never a
+  rewrite of core prose — a substring patch would rot on the next
+  `pull-core`).
+- `systemMessage` (a Claude Code extra with no documented Codex
+  counterpart) is dropped; its content is already in `additionalContext`
+  on the only path that emits it.
+- Chair profile: Codex model ids never match the core's `_is_opus`, so
+  `MODEL_PROFILE_MAP` (Astra→fable, Sol/Terra→opus) sets the core's own
+  documented `FABLE_ORCH_PROFILE` override for the child — never faking a
+  Claude model name into the payload, and never overriding an explicit
+  user pin.
+- `cold_cache_guard`'s context estimate reads a **Claude Code** JSONL
+  transcript. A Codex transcript will not parse, `context_tokens()`
+  returns None and the guard passes silently — the cold-cache band is
+  effectively off under Codex until a Codex transcript reader exists
+  (upstream work for `core/`, not for this repo).
+
+**Shared state, identical paths** — deliberately: session markers stay at
+`$TMPDIR/fable-orch-*-<session>.json` and metrics at
+`~/.claude/fable-orch/metrics.jsonl`, so `core/scripts/stats.py`, the
+cold-cache stamps and the retro tooling read both harnesses out of one
+place. To tell them apart, every metrics line a Codex fire produces is
+stamped `"harness": "codex"`. The core writes those lines itself and
+honours no harness env var, so the adapter records the log's size before
+running the guard and re-writes **only** the bytes appended after it —
+earlier lines (a Claude session's) are untouched.
+
+Knobs (the core's own still apply): `CODEX_ADAPTER_HARNESS` (stamp
+value), `CODEX_ADAPTER_TOOL_GATE=0`, `CODEX_ADAPTER_EXIT2=1` (signal
+deny/block via exit code 2 + stderr instead of stdout JSON — the other
+documented Codex mechanism), `CODEX_ADAPTER_DEBUG=<path>` (append raw +
+normalised payloads to a JSONL file).
+
+### Verified live: **no** — every event
+
+As of 2026-09-05 **no Codex hook has ever fired on this machine.** Codex
+gates hooks behind a persisted hook-trust decision that needs one
+interactive accept (or `--dangerously-bypass-hook-trust` from a normal
+terminal); the P1 probe's `probe.log` stayed empty, so the payloads,
+tool names and output schema below come from the docs
+(`developers.openai.com/codex/hooks`) via
+`<claude-repo>/.workflow/scratch/codex-probe/protocol.md`.
+
+| event | payload fields | block/deny semantics | tool names | live? |
+|---|---|---|---|---|
+| SessionStart | docs | n/a (additionalContext) | n/a | **no** |
+| UserPromptSubmit | docs | docs | n/a | **no** |
+| PreToolUse (spawn) | docs | docs | UI banner `collab: SpawnAgent` only | **no** |
+| PreToolUse (apply_patch) | docs | docs | not exposed at all under API-key auth + `gpt-5` | **no** |
+| PostToolUse | docs | n/a | as above | **no** |
+| Stop | docs | docs | n/a | **no** |
+| SessionEnd | docs | n/a | n/a | **no** |
+
+To close this out (P1 items 8/9): accept the hook-trust prompt once, run
+a session with `CODEX_ADAPTER_DEBUG=/tmp/codex-adapter.jsonl`, replace
+`tests/fixtures/*.json` with the captured `raw` objects, and flip this
+table. `tests/fixtures/README.md` lists exactly which guesses each
+capture would confirm or refute.
 
 ## Testing
 
@@ -60,8 +173,15 @@ codex-orchestrator/          this repo — vendors core/ via git subtree,
 make test
 # equivalent to:
 cd core && python3 -m pytest tests/ -q   # core's own guard tests, unmodified
-python3 -m pytest tests/ -q              # profiles, agents, codex-sync
+python3 -m pytest tests/ -q              # profiles, agents, codex-sync, adapter
 ```
+
+The adapter tests run the real core guards as subprocesses against the
+fixture payloads in `tests/fixtures/` (docs-derived, **not** live captures —
+see that directory's README), with `$TMPDIR` pointed at the test sandbox so
+the session markers stay inside it and
+`FABLE_ORCH_TEAMMATE_{STOP,INJECT}=1` set so the guards' "am I a teammate?"
+process-tree walk can't make the verdict depend on who started pytest.
 
 Run as **two separate pytest invocations**, not one combined
 `pytest core/tests tests`. `core/tests/conftest.py` (vendored, untouched by
@@ -82,7 +202,14 @@ entry point is `.codex-plugin/plugin.json` — required fields `name`, `version`
 `description`; optional `author`, `homepage`, `repository`, `license`,
 `keywords`, `skills`, `mcpServers`, `apps`, `hooks`, `interface`. Hooks are
 auto-discovered at `./hooks/hooks.json` if present — no manifest `hooks` entry
-needed (and none is set here, since that file doesn't exist yet). Skills are
+needed, and none is set here; `hooks/hooks.json` relies on that
+auto-discovery. **Could not confirm**: that the plugin root expands as
+`${CODEX_PLUGIN_ROOT}` (the name the hook commands use) and that
+`timeout` is honoured per hook — both are Claude-Code-shaped guesses,
+and only the adapter's own path depends on the variable (`core/` is
+resolved relative to the adapter file). If hooks never fire after the
+trust prompt is accepted, hard-code the absolute plugin path in
+`hooks/hooks.json` first. Skills are
 referenced via `skills: "./skills/"` (this repo symlinks `skills/playbook` to
 `core/skills/playbook`, matching the Claude repo's skill).
 
