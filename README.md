@@ -76,41 +76,90 @@ Codex hook stdin JSON
 
 | Codex event | guard | output |
 |---|---|---|
-| SessionStart | `inject_instructions` | `additionalContext` |
+| SessionStart | `inject_instructions` | `additionalContext` (`additionalContextLimit: 20000`) |
 | UserPromptSubmit | `cold_cache_guard` | `decision: block` (+ 3-min re-send ack) |
-| PreToolUse (spawn tools) | `ledger_guard_spawn` | `permissionDecision: deny` |
-| PreToolUse (apply_patch) | `ledger_guard_write` | `permissionDecision: deny` |
-| PostToolUse (apply_patch) | `ledger_bind` | none (session↔ledger binding) |
+| PreToolUse (`collaborationspawn_agent`) | `ledger_guard_spawn` | `permissionDecision: deny` |
+| PreToolUse (`apply_patch`, `Bash`) | `ledger_guard_write` | `permissionDecision: deny` |
+| PostToolUse (`apply_patch`, `Bash`) | `ledger_bind` | none (session↔ledger binding) |
 | Stop | `ledger_guard_stop` | `decision: block`, once per session |
-| SessionEnd | `cleanup_session_cache` | none |
+| SessionEnd | `cleanup_session_cache` | none (timeout ≤ 3 s, Codex clamps) |
 
-**Tool-name map** (data at the top of the adapter, `TOOL_NAME_MAP`):
-shell/`exec`/`local_shell`/`container.exec` → `Bash`; `apply_patch` (and
-`write_file`/`edit_file` spellings) → `Write` at PreToolUse, `Edit` at
-PostToolUse; `SpawnAgent`/`collab__spawn_agent`/`create_agent` → `Agent`
-with the spawn prompt mapped onto `tool_input.prompt`, so the spawn
-guard's 1500-char gate and its `subagent_type: fork` bypass both work.
-For `apply_patch` the adapter parses the patch envelope
-(`*** Add/Update/Delete File:`, `*** Move to:`, unified-diff `+++` as a
-fallback), absolutises each path against `cwd`, and runs the guard **once
-per LEDGER-matching path** — a patch touching five files still gets its
-ledger path checked, not just the first hunk.
+Codex's default `additionalContextLimit` is documented as 2500 characters
+and the injected chair profile is 3763 — 0.153.4 delivered it in full
+even without the field, but it is set explicitly on both
+context-carrying hooks so a longer profile can never be silently
+truncated.
+
+**Tool-name map** (data at the top of the adapter, `TOOL_NAME_MAP`) —
+the live names on Codex CLI 0.153.4 are `Bash`, `apply_patch` and
+`collaborationspawn_agent`; the rest of the map is defensive tolerance.
+`Bash` → `Bash`; `apply_patch` → `Write`/`Edit` per patch op (below);
+`collaborationspawn_agent` → `Agent`.
+
+Two live details that shape the whole write path:
+
+- **`tool_input.command` carries everything.** Both `Bash` and
+  `apply_patch` deliver their payload there — `apply_patch` puts the
+  entire `*** Begin Patch` envelope in it. (A first cut of this adapter
+  looked for `patch`/`input`/`diff` keys, found nothing, extracted no
+  path, and let a live ledger be overwritten.)
+- **The shell is a second write tool.** `apply_patch` also exists as an
+  arg0 shim binary, and the model pipes patches into it from `Bash` the
+  moment the first-party tool errors — observed destroying a ledger with
+  every PreToolUse hook reporting "Completed". So `Bash` is in the write
+  guard's and the binder's tool sets, and `shell_write_targets()` reads
+  the command for `>` / `tee` / `sed -i` / a piped patch envelope
+  (`grep`, `cat`, `sed -n`, `cp` with a ledger as *source* are not
+  writes and never denied).
+
+**Write vs Edit, per operation.** Core guards `^Write$` only — a
+whole-file replace. apply_patch is both tools at once, so the adapter
+classifies each hunk:
+
+| shape | kind | write guard |
+|---|---|---|
+| `*** Add File:` / `*** Delete File:` / `*** Move to:` | REPLACE | runs |
+| `*** Update File:` whose hunks delete **every** line of the target | REPLACE | runs |
+| any other `*** Update File:` | EDIT | skipped |
+| shell `> p`, `tee p`, piped apply_patch | REPLACE | runs |
+| shell `>> p`, `tee -a p`, `sed -i … p` | EDIT | skipped |
+
+Both halves of that table are load-bearing and were learned the hard
+way: mapping *every* `apply_patch` to `Write` deadlocks the harness (the
+chair may not touch a ledger it did not create, so it never binds, so
+the Stop guard stays inert — `stop_suppressed reason=unbound` on every
+session), while trusting the `Update File` label lets a model that read
+the file first wipe it with one all-deletions hunk.
+
+The spawn payload is `{task_name, agent_type, fork_turns, message}` and
+`message` is a **Fernet ciphertext**, not the prompt: the core's
+1500-char delegation gate therefore measures ciphertext length (~1.4× the
+plaintext), so it fires one notch early and never late. There is no way
+to read a Codex spawn prompt from a hook — the gate is length-only here
+by construction.
 
 The hooks.json matchers are Claude-style anchored regexes over the Codex
 tool names, **and** the adapter re-checks the mapped tool name in-process
 (`CODEX_ADAPTER_TOOL_GATE=0` disables), because Codex's matcher syntax is
-not verified live: an over-matching matcher still behaves, an
-under-matching one is the risk to watch.
+verified only for the names Codex uses today: an over-matching matcher
+still behaves, an under-matching one is the risk to watch.
 
 **Divergences from the Claude harness, on purpose:**
 
-- `apply_patch` is treated as a `Write` at PreToolUse even though it is
-  surgical like `Edit`. It *can* replace a file wholesale and Codex has
-  no second write tool to fall back to, so the ledger keeps the stricter
-  protection; the deny reason gets a `[codex-orchestrator]` note appended
-  explaining what "use Edit" means in this harness (appended, never a
-  rewrite of core prose — a substring patch would rot on the next
-  `pull-core`).
+- **The shell write route is guarded, Claude's is not.** A `cat > file`
+  from Bash is invisible to the Claude harness. Under Codex the shell is
+  where apply_patch itself lives, and it is demonstrably the path a
+  blocked model takes next, so the same rule applies there. Narrow by
+  design (see the table above) because a false positive denies an
+  ordinary shell call.
+- **An all-deletions `Update File` counts as a replace.** Claude's Edit
+  could wipe a ledger unguarded; here it cannot. One notch stricter,
+  deliberately: it is the only shape that both looks surgical and
+  destroys the file.
+- Every write-guard deny gets a `[codex-orchestrator]` note appended to
+  the core's reason, explaining what "use Edit" means in a harness with
+  no Edit tool (appended, never a rewrite of core prose — a substring
+  patch would rot on the next `pull-core`).
 - `systemMessage` (a Claude Code extra with no documented Codex
   counterpart) is dropped; its content is already in `additionalContext`
   on the only path that emits it.
@@ -141,31 +190,60 @@ deny/block via exit code 2 + stderr instead of stdout JSON — the other
 documented Codex mechanism), `CODEX_ADAPTER_DEBUG=<path>` (append raw +
 normalised payloads to a JSONL file).
 
-### Verified live: **no** — every event
+### Verified live: **yes** — every event, Codex CLI 0.153.4, 2026-09-05
 
-As of 2026-09-05 **no Codex hook has ever fired on this machine.** Codex
-gates hooks behind a persisted hook-trust decision that needs one
-interactive accept (or `--dangerously-bypass-hook-trust` from a normal
-terminal); the P1 probe's `probe.log` stayed empty, so the payloads,
-tool names and output schema below come from the docs
-(`developers.openai.com/codex/hooks`) via
-`<claude-repo>/.workflow/scratch/codex-probe/protocol.md`.
+Payloads captured with a user-level observe-only hook set
+(`<claude-repo>/.workflow/scratch/codex-probe/probe.log`) and replayed as
+`tests/fixtures/*.json`; guard behaviour re-checked by running the
+plugin for real with
+`codex exec --dangerously-bypass-hook-trust --sandbox workspace-write -m gpt-5.6-luna`.
+Hook verdicts show up on stderr as `hook: <Event> Completed|Blocked`.
 
-| event | payload fields | block/deny semantics | tool names | live? |
+| event | payload | block/deny semantics | live tool name | live? |
 |---|---|---|---|---|
-| SessionStart | docs | n/a (additionalContext) | n/a | **no** |
-| UserPromptSubmit | docs | docs | n/a | **no** |
-| PreToolUse (spawn) | docs | docs | UI banner `collab: SpawnAgent` only | **no** |
-| PreToolUse (apply_patch) | docs | docs | not exposed at all under API-key auth + `gpt-5` | **no** |
-| PostToolUse | docs | n/a | as above | **no** |
-| Stop | docs | docs | n/a | **no** |
-| SessionEnd | docs | n/a | n/a | **no** |
+| SessionStart | `session_id, transcript_path, cwd, hook_event_name, model, permission_mode, source` | `additionalContext`, full 3763-char profile in the transcript | n/a | **yes** |
+| UserPromptSubmit | + `turn_id, prompt` | `decision: block` (schema exercised in tests; no cold Codex session yet) | n/a | **partial** |
+| PreToolUse (spawn) | + `tool_name, tool_input, tool_use_id` | `hook: PreToolUse Blocked`, `spawn_deny chars=1956` | `collaborationspawn_agent` (feature `multi_agent_v2`) | **yes** |
+| PreToolUse (write) | as above | `hook: PreToolUse Blocked`, `write_deny`, ledger intact after 4 bypass attempts | `apply_patch`, `Bash` | **yes** |
+| PostToolUse | + `tool_response` | binds the session (`marker["ledger"]`) | `apply_patch`, `Bash` | **yes** |
+| Stop | + `stop_hook_active, last_assistant_message` | exactly one `hook: Stop Blocked` + `stop_block open=2`, retry passes | n/a | **yes** |
+| SessionEnd | `session_id, transcript_path, cwd, hook_event_name, reason` | none | n/a | **yes** |
 
-To close this out (P1 items 8/9): accept the hook-trust prompt once, run
-a session with `CODEX_ADAPTER_DEBUG=/tmp/codex-adapter.jsonl`, replace
-`tests/fixtures/*.json` with the captured `raw` objects, and flip this
-table. `tests/fixtures/README.md` lists exactly which guesses each
-capture would confirm or refute.
+Evidence for the two failures this closed:
+
+```
+# A — write guard, before: all hooks "Completed", ledger overwritten
+PreToolUse apply_patch {"command": "*** Begin Patch\n*** Delete File: …/LEDGER-kissenbox.md\n*** Add File: …"}
+PreToolUse Bash        {"command": "target='…/LEDGER-kissenbox.md' … | …/arg0/…/apply_patch"}
+PostToolUse Bash       tool_response: "apply_patch completed\n"
+# A — after
+error=Command blocked by PreToolUse hook: LEDGER GUARD: …/LEDGER-kissenbox.md is an EXISTING live ledger
+hook: PreToolUse Blocked          (× 4: apply_patch tool, shim pipe, `printf >`, `LEDGER_WRITE_GUARD=0 printf >`)
+{"event": "write_deny", "path": "LEDGER-kissenbox.md", "bound": null, "harness": "codex"}
+
+# B — stop guard, before / after
+{"event": "stop_suppressed", "session": "01a0730a", "reason": "unbound", "harness": "codex"}
+{"event": "stop_block", "session": "01a0731e", "open": 2, "ledger": "…/LEDGER-stoptest.md", "harness": "codex"}
+
+# C — spawn gate, isolated repo with no ledger
+error=Tool call blocked by PreToolUse hook: LEDGER GUARD: this looks like a detailed delegation…
+{"event": "spawn_deny", "chars": 1956, "threshold": 1500, "tool": "Agent", "harness": "codex"}
+```
+
+Still not exercised live: the `cold_cache_guard` block band (needs a
+Codex session left idle past the cold threshold — and see the divergence
+note above: `context_tokens()` cannot read a Codex transcript, so the
+band is inert until that lands upstream in `core/`), and the
+`CODEX_ADAPTER_EXIT2=1` signalling path (tests only; the JSON schema
+works, so there is no reason to switch).
+
+**Re-installing after a change** — the plugin cache is a *copy* of this
+repo, so edits do not take effect until:
+
+```sh
+codex plugin remove codex-orchestrator@codex-orchestrator
+codex plugin add    codex-orchestrator@codex-orchestrator
+```
 
 ## Testing
 
