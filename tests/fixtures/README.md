@@ -21,7 +21,7 @@ genuinely unknown, and what the adapter therefore treats tolerantly:
 | which `tool_input` key holds an apply_patch body | candidate list `PATCH_TEXT_KEYS` = patch, input, content, text, diff, patch_text |
 | which `tool_input` key holds a spawn prompt | candidate list `PROMPT_KEYS` = prompt, task, instructions, input, message, developer_instructions, description |
 | whether `matcher` is a regex (Claude-style) or a glob | hooks.json ships Claude-style anchored regexes **and** the adapter re-checks the tool name in-process (`CODEX_ADAPTER_TOOL_GATE`), so a matcher that over-matches still behaves |
-| whether the plugin root variable is `${CODEX_PLUGIN_ROOT}` | only the adapter's own path uses it; `core/` is resolved relative to the adapter file |
+| whether the plugin root variable is `${CLAUDE_PLUGIN_ROOT}` | only the adapter's own path uses it; `core/` is resolved relative to the adapter file |
 | whether `apply_patch` is exposed at all under the current auth | on plain `gpt-5` + API-key auth it was **not** (protocol.md); the shell-only fallback (`printf > file`) is invisible to the write guard either way |
 
 ## Verifying against reality

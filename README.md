@@ -71,7 +71,7 @@ Codex hook stdin JSON
 ```
 
 **Guards and events** (`hooks/hooks.json`, one entry each; `command` =
-`python3 "${CODEX_PLUGIN_ROOT}/scripts/codex_adapter.py" <guard>`,
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/codex_adapter.py" <guard>`,
 `commandWindows` = the same with `python` and backslashes, for MGMT01):
 
 | Codex event | guard | output |
@@ -204,7 +204,7 @@ entry point is `.codex-plugin/plugin.json` — required fields `name`, `version`
 auto-discovered at `./hooks/hooks.json` if present — no manifest `hooks` entry
 needed, and none is set here; `hooks/hooks.json` relies on that
 auto-discovery. **Could not confirm**: that the plugin root expands as
-`${CODEX_PLUGIN_ROOT}` (the name the hook commands use) and that
+`${CLAUDE_PLUGIN_ROOT}` (the name the hook commands use) and that
 `timeout` is honoured per hook — both are Claude-Code-shaped guesses,
 and only the adapter's own path depends on the variable (`core/` is
 resolved relative to the adapter file). If hooks never fire after the
