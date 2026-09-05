@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash  # explicit bash enables pipefail — `cmd | tail` can't mask a red exit
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        # core/'s own guard tests would run fine down to Python 3.9 (the
+        # source repo's matrix), but bin/codex-sync uses the stdlib
+        # `tomllib` (3.11+) to read the TOML profiles, and both jobs in
+        # this matrix run both test suites — so the floor here is 3.11.
+        # core/'s Windows-degrades-gracefully contract (see
+        # core/tests/conftest.py) is unaffected either way.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install pytest
+      # Two separate invocations, not one combined `pytest core/tests tests`
+      # — see the Makefile's `test` target comment for why (conftest.py name
+      # collision with no package __init__.py; core/ stays untouched by design).
+      - name: core/ tests (vendored from fable5-opus5-orchestrator)
+        working-directory: core
+        run: python -m pytest tests/ -q
+      - name: codex-orchestrator tests (profiles, agents, codex-sync)
+        run: python -m pytest tests/ -q

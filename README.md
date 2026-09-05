@@ -50,8 +50,30 @@ codex-orchestrator/          this repo — vendors core/ via git subtree,
 - `bin/codex-sync` — generates `~/.codex/agents/*.toml`, `<repo>/.codex/agents/*.toml`
   from `<repo>/.claude/agents/*.md`, an `AGENTS.md` stub, the `~/.agents/skills`
   symlink farm, and an `[mcp_servers]` snippet from the Claude MCP config.
-- `tests/` — core tests re-run against `core/`, plus `codex-sync` and profile
-  schema tests.
+- `tests/` — `codex-sync` unit tests (frontmatter translation, idempotency,
+  dry-run, AGENTS.md never-overwritten, secret redaction) and profile schema
+  tests. `core/tests/` (vendored, unmodified) proves core/ itself.
+
+## Testing
+
+```sh
+make test
+# equivalent to:
+cd core && python3 -m pytest tests/ -q   # core's own guard tests, unmodified
+python3 -m pytest tests/ -q              # profiles, agents, codex-sync
+```
+
+Run as **two separate pytest invocations**, not one combined
+`pytest core/tests tests`. `core/tests/conftest.py` (vendored, untouched by
+design — see the pull-core workflow) and `tests/conftest.py` are both named
+`conftest` with no package `__init__.py`; pytest's default import mode holds
+only one module of that name in `sys.modules` per session, so a single
+combined run makes one of the two conftests shadow the other and every
+`core/tests/test_*.py` fails to collect ("cannot import name X from
+conftest"). Confirmed by running it both ways — this is that "conftest path
+adjust" from the ledger, and the fix is process separation, not a code
+change to either conftest. CI (`.github/workflows/ci.yml`) runs the same two
+steps.
 
 ## Plugin manifest
 
