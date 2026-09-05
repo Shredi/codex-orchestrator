@@ -23,8 +23,9 @@ Session marker paths (`$TMPDIR/fable-orch-*-<sid>.json`) and the metrics
 log (`~/.claude/fable-orch/metrics.jsonl`) are deliberately IDENTICAL to
 the Claude harness, so `core/scripts/stats.py`, the cold-cache stamps and
 the retro tooling read both harnesses out of one place. Every metrics
-line this adapter causes is stamped `"harness": "codex"` (see
-`_stamp_metrics`) so the two can still be told apart.
+line this adapter causes is stamped `"harness": "codex"`: the adapter
+exports `FABLE_ORCH_HARNESS` into the guard's environment and the core
+(core-v2 and later) writes the key itself.
 
 FAIL OPEN, ALWAYS. Unparsable stdin, an unknown guard name, a crashing
 or hanging core script, an unwritable metrics log — every one of them
@@ -32,7 +33,8 @@ exits 0 with no output. A hook that can wedge a session is worse than
 the discipline it enforces.
 
 Configuration (this file; the core's own knobs still apply):
-    CODEX_ADAPTER_HARNESS=<name>   metrics stamp value (default "codex")
+    CODEX_ADAPTER_HARNESS=<name>   value exported to the core as
+                                   FABLE_ORCH_HARNESS (default "codex")
     CODEX_ADAPTER_TOOL_GATE=0      don't re-check tool names in-process
                                    (trust the hooks.json matcher alone)
     CODEX_ADAPTER_EXIT2=1          signal deny/block via exit code 2 +
@@ -557,70 +559,6 @@ def normalise(payload, guard):
     return codex_event, payloads
 
 
-# --- metrics stamping -------------------------------------------------
-
-def _metrics_path():
-    return os.path.join(os.path.expanduser("~"), ".claude", "fable-orch",
-                        "metrics.jsonl")
-
-
-def _metrics_offset():
-    """Size of the metrics log before the guard runs (0 when absent)."""
-    if (os.environ.get("FABLE_ORCH_METRICS") or "").strip() == "0":
-        return None
-    try:
-        return os.path.getsize(_metrics_path())
-    except OSError:
-        return 0
-
-
-def _stamp_metrics(offset):
-    """Add `"harness": "<HARNESS>"` to the lines the guard just appended.
-
-    The core writes its metrics itself and honours no harness env var
-    (checked against every `os.environ.get` in core/scripts), and core/
-    is a subtree that must not be edited here — so the adapter rewrites
-    only the byte range the child appended, leaving everything before
-    `offset` untouched. Best effort in every failure mode; a lost stamp
-    is a cosmetic loss, a broken metrics log is not."""
-    if offset is None:
-        return
-    path = _metrics_path()
-    try:
-        if os.path.getsize(path) <= offset:
-            return
-        with open(path, "r+", encoding="utf-8") as f:
-            try:  # POSIX only; the race window is one hook fire wide
-                import fcntl
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            except Exception:
-                pass
-            f.seek(offset)
-            tail = f.read()
-            lines = []
-            for line in tail.splitlines():
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    rec = json.loads(stripped)
-                except ValueError:
-                    lines.append(line)
-                    continue
-                if isinstance(rec, dict) and "harness" not in rec:
-                    rec["harness"] = HARNESS
-                    lines.append(json.dumps(rec))
-                else:
-                    lines.append(line)
-            if not lines:
-                return
-            f.seek(offset)
-            f.truncate()
-            f.write("\n".join(lines) + "\n")
-    except Exception:
-        pass
-
-
 # --- running the core guard -------------------------------------------
 
 def child_env(payload):
@@ -629,6 +567,10 @@ def child_env(payload):
     # at the vendored core, never at whatever a surrounding Claude
     # session may have exported.
     env["CLAUDE_PLUGIN_ROOT"] = CORE_ROOT
+    # core-v2+ stamps every metrics line it writes with this value, so the
+    # shared log can tell a Codex fire from a Claude Code one. It replaced
+    # the adapter's old post-hoc rewrite of the log tail.
+    env["FABLE_ORCH_HARNESS"] = HARNESS
     if not (os.environ.get("FABLE_ORCH_PROFILE") or "").strip():
         profile = MODEL_PROFILE_MAP.get(
             str(payload.get("model") or "").strip().lower())
@@ -642,7 +584,6 @@ def run_guard(guard, claude_payload):
     script = os.path.join(CORE_SCRIPTS, GUARDS[guard]["script"])
     if not os.path.isfile(script):
         return None
-    offset = _metrics_offset()
     try:
         proc = subprocess.run(
             [sys.executable, script],
@@ -653,8 +594,6 @@ def run_guard(guard, claude_payload):
         )
     except Exception:
         return None  # timeout, missing interpreter, ... -> fail open
-    finally:
-        _stamp_metrics(offset)
     if proc.returncode != 0:
         return None  # a core guard always exits 0; anything else = fail open
     out = (proc.stdout or "").strip()

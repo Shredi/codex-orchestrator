@@ -36,7 +36,8 @@ STRIP_ENV = [
     "FABLE_ORCH_COLD_ACK_MIN", "FABLE_ORCH_SWARM_CLEANUP",
     "FABLE_ORCH_SWARM_MAX_IDLE_H", "FABLE_ORCH_TEAMMATE_IDLE_H",
     "FABLE_ORCH_TEAMMATE_IDLE_RATE", "FABLE_ORCH_TEAMMATE_STOP",
-    "FABLE_ORCH_TEAMMATE_INJECT", "CLAUDE_CONFIG_DIR", "CLAUDE_PLUGIN_ROOT",
+    "FABLE_ORCH_TEAMMATE_INJECT", "FABLE_ORCH_HARNESS",
+    "CLAUDE_CONFIG_DIR", "CLAUDE_PLUGIN_ROOT",
     "TMUX_TMPDIR", "CODEX_ADAPTER_HARNESS", "CODEX_ADAPTER_TOOL_GATE",
     "CODEX_ADAPTER_EXIT2", "CODEX_ADAPTER_DEBUG",
 ]
@@ -574,6 +575,8 @@ def test_session_end_is_silent(sandbox):
 
 @pytest.mark.skipif(os.name == "nt", reason="HOME-based expanduser is POSIX")
 def test_metrics_lines_are_stamped_with_the_harness(sandbox):
+    """The adapter exports FABLE_ORCH_HARNESS; the core (core-v2+) writes
+    the key itself, exactly once per line — no post-hoc tail rewrite."""
     home, repo, tmp = sandbox
     payload = fixture("pre_tool_use_spawn", cwd=str(repo))
     payload["tool_input"]["prompt"] = "x" * 2000
@@ -583,15 +586,20 @@ def test_metrics_lines_are_stamped_with_the_harness(sandbox):
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
     log = home / ".claude" / "fable-orch" / "metrics.jsonl"
-    records = [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l.strip()]
+    lines = [l for l in log.read_text(encoding="utf-8").splitlines() if l.strip()]
+    records = [json.loads(l) for l in lines]
     assert records and records[-1]["event"] == "spawn_deny"
     assert all(r["harness"] == "codex" for r in records)
+    # exactly one stamp per line: a second stamping pass would show up as
+    # a duplicated key in the raw text even though json.loads hides it.
+    assert all(l.count('"harness"') == 1 for l in lines)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="HOME-based expanduser is POSIX")
 def test_metrics_stamp_leaves_earlier_lines_alone(sandbox):
-    """Only the byte range the child appended is rewritten — a line from
-    a Claude Code session in the same log keeps its (absent) harness."""
+    """A line a Claude Code session wrote into the same log keeps its
+    (absent) harness key — the adapter never touches bytes it did not
+    cause."""
     home, repo, tmp = sandbox
     log = home / ".claude" / "fable-orch" / "metrics.jsonl"
     log.parent.mkdir(parents=True)
@@ -606,6 +614,23 @@ def test_metrics_stamp_leaves_earlier_lines_alone(sandbox):
     assert len(records) == 2
     assert "harness" not in records[0]
     assert records[1]["harness"] == "codex"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="HOME-based expanduser is POSIX")
+def test_metrics_stamp_value_is_overridable(sandbox):
+    """CODEX_ADAPTER_HARNESS renames the stamp; it reaches the core as
+    FABLE_ORCH_HARNESS, still once per line."""
+    home, repo, tmp = sandbox
+    payload = fixture("pre_tool_use_spawn", cwd=str(repo))
+    payload["tool_input"]["prompt"] = "x" * 2000
+    run_adapter("ledger_guard_spawn", payload, tmp,
+                env_extra={"HOME": str(home), "FABLE_ORCH_METRICS": "1",
+                           "CODEX_ADAPTER_HARNESS": "codex-mgmt01"})
+
+    log = home / ".claude" / "fable-orch" / "metrics.jsonl"
+    lines = [l for l in log.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert lines and all(json.loads(l)["harness"] == "codex-mgmt01" for l in lines)
+    assert all(l.count('"harness"') == 1 for l in lines)
 
 
 # --- tool-name map ----------------------------------------------------

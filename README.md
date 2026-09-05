@@ -32,7 +32,7 @@ codex-orchestrator/          this repo — vendors core/ via git subtree,
 
 - `.codex-plugin/plugin.json` — plugin manifest (see "Plugin manifest" below).
 - `core/` — `git subtree` vendor of `fable5-opus5-orchestrator` at tag
-  `core-v1` (see `core/VERSION`). `git subtree add` pulls the **whole** source
+  `core-v2` (see `core/VERSION`). `git subtree add` pulls the **whole** source
   repo tree into `core/`, not just `scripts/instructions/skills/playbook/tests`
   — subtree only vendors at repo granularity. The extra files (this repo's
   own `.github/`, `.claude-plugin/`, top-level `README.md`/`LICENSE` duplicated
@@ -168,27 +168,34 @@ still behaves, an under-matching one is the risk to watch.
   documented `FABLE_ORCH_PROFILE` override for the child — never faking a
   Claude model name into the payload, and never overriding an explicit
   user pin.
-- `cold_cache_guard`'s context estimate reads a **Claude Code** JSONL
-  transcript. A Codex transcript will not parse, `context_tokens()`
-  returns None and the guard passes silently — the cold-cache band is
-  effectively off under Codex until a Codex transcript reader exists
-  (upstream work for `core/`, not for this repo).
+- `cold_cache_guard`'s context estimate reads the session transcript.
+  Since `core-v2` it parses the **Codex** session JSONL as well as the
+  Claude Code one, so the cold-cache bands are live under Codex too.
+  (Before `core-v2` a Codex transcript did not parse, `context_tokens()`
+  returned None and the guard passed silently.)
 
 **Shared state, identical paths** — deliberately: session markers stay at
 `$TMPDIR/fable-orch-*-<session>.json` and metrics at
 `~/.claude/fable-orch/metrics.jsonl`, so `core/scripts/stats.py`, the
 cold-cache stamps and the retro tooling read both harnesses out of one
 place. To tell them apart, every metrics line a Codex fire produces is
-stamped `"harness": "codex"`. The core writes those lines itself and
-honours no harness env var, so the adapter records the log's size before
-running the guard and re-writes **only** the bytes appended after it —
-earlier lines (a Claude session's) are untouched.
+stamped `"harness": "codex"`. Since `core-v2` the core does that itself:
+the adapter exports `FABLE_ORCH_HARNESS=codex` into the guard
+subprocess's environment and the guard writes the key as it writes the
+line — exactly once, never a second pass. (Up to `core-v1` the adapter
+rewrote the log's tail after the fact; that code is gone.) Lines a
+Claude Code session wrote carry no `harness` key and are never touched.
 
-Knobs (the core's own still apply): `CODEX_ADAPTER_HARNESS` (stamp
-value), `CODEX_ADAPTER_TOOL_GATE=0`, `CODEX_ADAPTER_EXIT2=1` (signal
-deny/block via exit code 2 + stderr instead of stdout JSON — the other
-documented Codex mechanism), `CODEX_ADAPTER_DEBUG=<path>` (append raw +
-normalised payloads to a JSONL file).
+Knobs (the core's own still apply): `CODEX_ADAPTER_HARNESS` (the value
+exported as `FABLE_ORCH_HARNESS`, default `codex`),
+`CODEX_ADAPTER_TOOL_GATE=0`, `CODEX_ADAPTER_EXIT2=1` (signal deny/block
+via exit code 2 + stderr instead of stdout JSON — the other documented
+Codex mechanism), and `CODEX_ADAPTER_DEBUG` — a **path**: the adapter
+appends the raw and the normalised payload of every fire to that JSONL
+file (this is how a payload question gets settled live). It is not a
+boolean; the boolean-looking values `1`/`true`/`yes`/`on` are accepted
+and redirected to `$TMPDIR/codex-adapter-debug.jsonl` rather than
+dropping a file literally named `1` into the session's cwd.
 
 ### Verified live: **yes** — every event, Codex CLI 0.153.4, 2026-09-05
 
@@ -313,16 +320,25 @@ credentials.
 
 ```sh
 # in fable5-opus5-orchestrator, after a fix lands on main:
-git tag core-vN
-# (git tag only — do not push; see also `make tag-core VERSION=vN` on the
-#  core-tagging branch, which does the same thing as a documented target)
+make tag-core VERSION=v3          # or: git tag core-v3
+# tag only — pushing rolls the change out to the live Claude Code plugin
+# via autoUpdate, so that is Marc's call, not the release step's
 
 # in codex-orchestrator:
-make pull-core TAG=core-vN
+make pull-core TAG=core-v3
+make test                         # TWO pytest runs, see "Testing"
 ```
 
 `make pull-core` runs `git subtree pull --prefix=core <path-to-source-repo> <TAG> --squash`
-and rewrites `core/VERSION` to `<TAG>`.
+and rewrites `core/VERSION` to `<TAG>`. `SOURCE` defaults to the sibling
+checkout `../fable5-opus5-orchestrator`; override it once this repo has a
+git remote for the core.
+
+Current: **`core-v2`** (2026-09-05) — brought two things this repo had been
+working around: `FABLE_ORCH_HARNESS`, honoured by every core `_metric()`
+writer, which retired the adapter's metrics tail-rewrite entirely; and a
+`cold_cache_guard.context_tokens()` that parses Codex session JSONL, which
+turned the cold-cache bands on under Codex. Core tests at `core-v2`: 268.
 
 ## Install
 
