@@ -1,0 +1,89 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CODEX_PLUGIN_ROOT}/scripts/codex_adapter.py\" inject_instructions",
+            "commandWindows": "python \"${CODEX_PLUGIN_ROOT}\\scripts\\codex_adapter.py\" inject_instructions",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CODEX_PLUGIN_ROOT}/scripts/codex_adapter.py\" cold_cache_guard",
+            "commandWindows": "python \"${CODEX_PLUGIN_ROOT}\\scripts\\codex_adapter.py\" cold_cache_guard",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^(SpawnAgent|spawn_agent|collab__spawn_agent|collab\\.spawn_agent|create_agent|Agent|Task|Workflow|TaskCreate)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CODEX_PLUGIN_ROOT}/scripts/codex_adapter.py\" ledger_guard_spawn",
+            "commandWindows": "python \"${CODEX_PLUGIN_ROOT}\\scripts\\codex_adapter.py\" ledger_guard_spawn",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "^(apply_patch|applypatch|write_file|edit_file|create_file|Write)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CODEX_PLUGIN_ROOT}/scripts/codex_adapter.py\" ledger_guard_write",
+            "commandWindows": "python \"${CODEX_PLUGIN_ROOT}\\scripts\\codex_adapter.py\" ledger_guard_write",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(apply_patch|applypatch|write_file|edit_file|create_file|Write|Edit|MultiEdit)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CODEX_PLUGIN_ROOT}/scripts/codex_adapter.py\" ledger_bind",
+            "commandWindows": "python \"${CODEX_PLUGIN_ROOT}\\scripts\\codex_adapter.py\" ledger_bind",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CODEX_PLUGIN_ROOT}/scripts/codex_adapter.py\" ledger_guard_stop",
+            "commandWindows": "python \"${CODEX_PLUGIN_ROOT}\\scripts\\codex_adapter.py\" ledger_guard_stop",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CODEX_PLUGIN_ROOT}/scripts/codex_adapter.py\" cleanup_session_cache",
+            "commandWindows": "python \"${CODEX_PLUGIN_ROOT}\\scripts\\codex_adapter.py\" cleanup_session_cache",
+            "timeout": 25
+          }
+        ]
+      }
+    ]
+  }
+}
