@@ -1,13 +1,14 @@
 {
-  "session_id": "codex-fixture-session",
-  "transcript_path": "/tmp/codex-sessions/codex-fixture-session.jsonl",
-  "cwd": "/tmp/codex-fixture-repo",
+  "session_id": "01a0730a-499c-7720-97ef-c0c10a9efe9d",
+  "turn_id": "01a0730a-49e5-7700-83be-22362239a59f",
+  "transcript_path": "/Users/marc/.codex/sessions/2026/09/05/rollout-2026-09-05T21-27-29-01a0730a-499c-7720-97ef-c0c10a9efe9d.jsonl",
+  "cwd": "/Users/marc/Documents/git/claude",
   "hook_event_name": "PreToolUse",
-  "turn_id": "turn_03",
+  "model": "gpt-5.6-luna",
+  "permission_mode": "bypassPermissions",
   "tool_name": "apply_patch",
-  "tool_use_id": "call_patch_01",
   "tool_input": {
-    "input": "*** Begin Patch\n*** Update File: PLACEHOLDER_PATH\n@@\n-old\n+new\n*** End Patch\n"
+    "command": "*** Begin Patch\n*** Update File: PLACEHOLDER_PATH\n@@\n-old\n+new\n*** End Patch\n"
   },
-  "permission_mode": "workspace-write"
+  "tool_use_id": "exec-26c6848d-50d6-4eec-b7bd-7dfcca60dd5f"
 }

@@ -1,7 +1,7 @@
 {
-  "session_id": "codex-fixture-session",
-  "transcript_path": "/tmp/codex-sessions/codex-fixture-session.jsonl",
-  "cwd": "/tmp/codex-fixture-repo",
+  "session_id": "01a0730a-499c-7720-97ef-c0c10a9efe9d",
+  "transcript_path": "/Users/marc/.codex/sessions/2026/09/05/rollout-2026-09-05T21-27-29-01a0730a-499c-7720-97ef-c0c10a9efe9d.jsonl",
+  "cwd": "/Users/marc/Documents/git/claude",
   "hook_event_name": "SessionEnd",
-  "reason": "exit"
+  "reason": "other"
 }

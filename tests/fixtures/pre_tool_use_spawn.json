@@ -1,14 +1,17 @@
 {
-  "session_id": "codex-fixture-session",
-  "transcript_path": "/tmp/codex-sessions/codex-fixture-session.jsonl",
-  "cwd": "/tmp/codex-fixture-repo",
+  "session_id": "01a0731f-f1ea-79e0-8bdd-69f6f62f334c",
+  "turn_id": "01a0731f-f232-7952-bbd9-927ea9c8637d",
+  "transcript_path": "/Users/marc/.codex/sessions/2026/09/05/rollout-2026-09-05T21-51-08-01a0731f-f1ea-79e0-8bdd-69f6f62f334c.jsonl",
+  "cwd": "/Users/marc/Documents/git/claude/.workflow/scratch/codex-spawntest",
   "hook_event_name": "PreToolUse",
-  "turn_id": "turn_02",
-  "tool_name": "SpawnAgent",
-  "tool_use_id": "call_spawn_01",
+  "model": "gpt-5.6-luna",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "collaborationspawn_agent",
   "tool_input": {
-    "agent": "sonnet",
-    "prompt": "PLACEHOLDER_PROMPT"
+    "task_name": "hpl_wpc_research",
+    "agent_type": "sonnet",
+    "fork_turns": "all",
+    "message": "PLACEHOLDER_PROMPT"
   },
-  "permission_mode": "workspace-write"
+  "tool_use_id": "call_MSBp49FditvFeT8MEs7btSSV"
 }

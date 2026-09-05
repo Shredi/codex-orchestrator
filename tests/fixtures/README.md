@@ -1,50 +1,57 @@
 # Codex hook payload fixtures
 
-## ⚠ UNVERIFIED LIVE (2026-09-05)
+## Captured live — Codex CLI 0.153.4, 2026-09-05
 
-**No Codex hook has ever fired on this machine.** Every payload in this
-directory is reconstructed from the documented field lists in
-`<claude-repo>/.workflow/scratch/codex-probe/protocol.md` (P1), which in turn
-come from `developers.openai.com/codex/hooks` — **not** from a captured
-`probe.log`. The probe's own log stayed empty across every run because Codex
-gates hooks behind a *persisted hook-trust* decision that needs either one
-interactive session accepting the prompt or a `--dangerously-bypass-hook-trust`
-invocation from a normal terminal (see protocol.md, "BLOCKER").
+Every file here is a **real Codex hook payload**, taken verbatim from
+`<claude-repo>/.workflow/scratch/codex-probe/probe.log` (key
+`stdin_payload`), written by a user-level observe-only hook set that logs
+and always exits 0. Only two things were normalised for the tests: the
+`session_id` is swapped for `codex-fixture-session` by the `fixture()`
+helper, and tool bodies carry a `PLACEHOLDER_*` the tests replace.
+Session ids and transcript paths are otherwise left as captured.
 
-So these fixtures prove the **adapter's** behaviour, not Codex's. What is
-genuinely unknown, and what the adapter therefore treats tolerantly:
+What the captures settled — the previous, docs-derived generation of
+these fixtures guessed at least one of these wrong in every row:
 
-| Unknown | How the adapter copes |
+| question | live answer |
 |---|---|
-| `tool_name` for the shell tool (UI shows `exec`) | `TOOL_NAME_MAP` accepts `shell`/`exec`/`local_shell`/`container.exec`/`run_command`/`bash` |
-| `tool_name` for the subagent spawn (UI shows `collab: SpawnAgent`) | accepts `SpawnAgent`/`spawn_agent`/`collab__spawn_agent`/`collab.spawn_agent`/`create_agent`, and strips a `collab:` prefix |
-| which `tool_input` key holds an apply_patch body | candidate list `PATCH_TEXT_KEYS` = patch, input, content, text, diff, patch_text |
-| which `tool_input` key holds a spawn prompt | candidate list `PROMPT_KEYS` = prompt, task, instructions, input, message, developer_instructions, description |
-| whether `matcher` is a regex (Claude-style) or a glob | hooks.json ships Claude-style anchored regexes **and** the adapter re-checks the tool name in-process (`CODEX_ADAPTER_TOOL_GATE`), so a matcher that over-matches still behaves |
-| whether the plugin root variable is `${CLAUDE_PLUGIN_ROOT}` | only the adapter's own path uses it; `core/` is resolved relative to the adapter file |
-| whether `apply_patch` is exposed at all under the current auth | on plain `gpt-5` + API-key auth it was **not** (protocol.md); the shell-only fallback (`printf > file`) is invisible to the write guard either way |
-
-## Verifying against reality
-
-Once the hook-trust prompt has been accepted once:
-
-```sh
-CODEX_ADAPTER_DEBUG=/tmp/codex-adapter.jsonl codex "…"
-```
-
-Every fire appends `{"guard": …, "raw": <Codex payload>, "normalised": [<Claude payloads>]}`.
-Replace the fixtures here with the `raw` objects, drop this warning, and flip
-the README's "verified live" table to yes.
+| payload shape | identical to Claude Code's, plus `turn_id` and `tool_use_id`; `model` and `permission_mode` on every event |
+| shell tool name | **`Bash`** (not `shell`/`exec`/`local_shell`) |
+| patch tool name | **`apply_patch`**, exposed on a ChatGPT account with `gpt-5.6-luna` |
+| where the patch body lives | **`tool_input["command"]`** — the whole `*** Begin Patch` envelope; no `patch`/`input`/`diff` key exists |
+| spawn tool name | **`collaborationspawn_agent`** (feature `multi_agent_v2`, `--enable multi_agent_v2`) |
+| spawn tool input | `{task_name, agent_type, fork_turns, message}` — `message` is a **Fernet ciphertext**, never the prompt |
+| matcher syntax | Claude-style regex; the anchored `^(…)$` forms in `hooks/hooks.json` match |
+| plugin root variable | **`CLAUDE_PLUGIN_ROOT`** (Codex exports the Claude-compatible name; `CODEX_PLUGIN_ROOT` never expands) |
+| Stop payload | carries `stop_hook_active` and `last_assistant_message`; the retry sets `stop_hook_active: true` |
+| SessionEnd | `reason` present, `model` absent; Codex clamps the hook timeout to 3 s |
 
 ## Files
 
 | fixture | event | notes |
 |---|---|---|
-| `session_start.json` | SessionStart | `source`, `model` (`gpt-6-astra` → FABLE profile) |
-| `user_prompt_submit.json` | UserPromptSubmit | slash-command prompt (`/sync`) |
-| `pre_tool_use_spawn.json` | PreToolUse | `SpawnAgent`; `PLACEHOLDER_PROMPT` is replaced per test |
-| `pre_tool_use_apply_patch.json` | PreToolUse | `apply_patch`; `PLACEHOLDER_PATH` is replaced per test |
-| `post_tool_use_apply_patch.json` | PostToolUse | same + `tool_response` |
-| `pre_tool_use_shell.json` | PreToolUse | `shell` with an argv-list command; must reach no guard |
+| `session_start.json` | SessionStart | live `gpt-5.6-luna`; tests override `model` for the tier assertions |
+| `user_prompt_submit.json` | UserPromptSubmit | prompt normalised to `/sync` (slash-command passthrough) |
+| `pre_tool_use_spawn.json` | PreToolUse | `collaborationspawn_agent`; `message` = `PLACEHOLDER_PROMPT` |
+| `pre_tool_use_apply_patch.json` | PreToolUse | `apply_patch`; `command` = an envelope with `PLACEHOLDER_PATH` |
+| `post_tool_use_apply_patch.json` | PostToolUse | same + a real `tool_response` shape |
+| `pre_tool_use_shell.json` | PreToolUse | `Bash`; the write-guard tests put a shim/redirect command here |
+| `post_tool_use_shell.json` | PostToolUse | `Bash` + `tool_response` |
 | `stop.json` | Stop | `stop_hook_active: false`; tests flip it |
-| `session_end.json` | SessionEnd | `reason` |
+| `session_end.json` | SessionEnd | `reason: other` |
+
+## Re-capturing
+
+The observe-only probe at `~/.codex/hooks.json` is still installed and
+still appends to `probe.log`. To watch what the *adapter* makes of a
+payload instead:
+
+```sh
+CODEX_ADAPTER_DEBUG=/tmp/codex-adapter.jsonl \
+  codex exec --dangerously-bypass-hook-trust --sandbox workspace-write \
+             -m gpt-5.6-luna '…'
+```
+
+Each fire appends `{"guard", "raw", "normalised"}`. (Setting the variable
+to `1` writes to `$TMPDIR/codex-adapter-debug.jsonl` rather than a file
+called `1` in the cwd.)
