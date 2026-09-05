@@ -315,32 +315,35 @@ Requires `python3` on PATH. **Windows** works too: the ledger guards, the Sessio
 Set these in `~/.claude/settings.json` under `"env"`.
 
 ```
-┌───────────────────────────────┬────────────────────┬────────────────────────────────────────────┐
-│ Env var                       │ Default            │ Meaning                                    │
-├───────────────────────────────┼────────────────────┼────────────────────────────────────────────┤
-│ LEDGER_GUARD_THRESHOLD        │ 1500               │ spawn-guard gate (chars)                   │
-│ FABLE_ORCH_PROFILE            │ auto               │ pin the chair profile: auto | fable | opus │
-│ FABLE_ORCH_TEAMMATE_STOP      │ (off)              │ 1 lets the close guard hold teammates too  │
-│ FABLE_ORCH_TEAMMATE_INJECT    │ (off)              │ 1 injects the profile into teammates too   │
-│ LEDGER_GUARD_TASKS            │ 3                  │ 3rd ledgerless tracker task denied; 0 off  │
-│ LEDGER_GUARD_STOP_MODE        │ once-per-session   │ every-turn restores per-turn blocking      │
-│ LEDGER_WRITE_GUARD            │ (on)               │ 0 disables the ledger overwrite guard      │
-│ FABLE_ORCH_METRICS            │ (on)               │ 0 disables local metrics logging           │
-│ FABLE_ORCH_SWARM_CLEANUP      │ (on)               │ 0 disables all teammate reaping            │
-│ FABLE_ORCH_SWARM_MAX_IDLE_H   │ 48                 │ sweep swarms idle ≥ N hours; 0 disables    │
-│ FABLE_ORCH_TEAMMATE_IDLE_H    │ 1                  │ kill teammate panes idle ≥ N hours; 0 off  │
-│ FABLE_ORCH_TEAMMATE_IDLE_RATE │ 0.01               │ cpu-sec/sec under which a pane is idle     │
-│ FABLE_ORCH_COLD_GUARD         │ (on)               │ 0 disables the cold-cache guard entirely   │
-│ FABLE_ORCH_COLD_MIN           │ 55                 │ idle minutes after which the cache is cold │
-│ FABLE_ORCH_COLD_BLOCK_TOKENS  │ 150000             │ cold context at/above this blocks; 0 off   │
-│ FABLE_ORCH_COLD_WARN_TOKENS   │ 50000              │ cold context at/above this warns; 0 off    │
-│ FABLE_ORCH_COLD_ACK_MIN       │ 3                  │ minutes a blocked prompt can be re-sent    │
-└───────────────────────────────┴────────────────────┴────────────────────────────────────────────┘
+┌───────────────────────────────┬──────────────────┬────────────────────────────────────────────┐
+│ Env var                       │ Default          │ Meaning                                    │
+├───────────────────────────────┼──────────────────┼────────────────────────────────────────────┤
+│ LEDGER_GUARD_THRESHOLD        │ 1500             │ spawn-guard gate (chars)                   │
+│ FABLE_ORCH_PROFILE            │ auto             │ pin the chair profile: auto | fable | opus │
+│ FABLE_ORCH_TEAMMATE_STOP      │ (off)            │ 1 lets the close guard hold teammates too  │
+│ FABLE_ORCH_TEAMMATE_INJECT    │ (off)            │ 1 injects the profile into teammates too   │
+│ LEDGER_GUARD_TASKS            │ 3                │ 3rd ledgerless tracker task denied; 0 off  │
+│ LEDGER_GUARD_STOP_MODE        │ once-per-session │ every-turn restores per-turn blocking      │
+│ LEDGER_WRITE_GUARD            │ (on)             │ 0 disables the ledger overwrite guard      │
+│ FABLE_ORCH_METRICS            │ (on)             │ 0 disables local metrics logging           │
+│ FABLE_ORCH_SWARM_CLEANUP      │ (on)             │ 0 disables all teammate reaping            │
+│ FABLE_ORCH_SWARM_MAX_IDLE_H   │ 48               │ sweep swarms idle ≥ N hours; 0 disables    │
+│ FABLE_ORCH_TEAMMATE_IDLE_H    │ 1                │ kill teammate panes idle ≥ N hours; 0 off  │
+│ FABLE_ORCH_TEAMMATE_IDLE_RATE │ 0.01             │ cpu-sec/sec under which a pane is idle     │
+│ FABLE_ORCH_COLD_GUARD         │ (on)             │ 0 disables the cold-cache guard entirely   │
+│ FABLE_ORCH_COLD_MIN           │ 55               │ idle minutes after which the cache is cold │
+│ FABLE_ORCH_COLD_BLOCK_TOKENS  │ 150000           │ cold context at/above this blocks; 0 off   │
+│ FABLE_ORCH_COLD_WARN_TOKENS   │ 50000            │ cold context at/above this warns; 0 off    │
+│ FABLE_ORCH_COLD_ACK_MIN       │ 3                │ minutes a blocked prompt can be re-sent    │
+│ FABLE_ORCH_HARNESS            │ (unset)          │ stamp on every metrics line (adapter tag)  │
+└───────────────────────────────┴──────────────────┴────────────────────────────────────────────┘
 ```
 
 **The session marker.** The SessionStart injector writes a per-session temp file whose immutable `started` timestamp survives resume/clear/compact re-injections, and the SessionEnd reaper anchors its cleanup to it. It also carries the cold-cache guard's activity stamps (`last_stop`, `last_prompt`) and, while a block is outstanding, its acknowledgement. The same file carries the D1 `ledger` binding: bound → the close guard holds only that ledger; a marker that exists but was never bound → the close guard never holds it; no marker at all (manual install) → the original mtime-ownership rule (ledger touched after the session started). The SessionEnd hook removes the session's temp files and sweeps any older than 96 hours.
 
-**Metrics.** Every hook appends one event line to `~/.claude/fable-orch/metrics.jsonl` (events only — never prompt content): injections per model, mid-session profile switches, spawn/task denies and passes, stop blocks and suppressions, reaps, and cold-cache blocks/warns/acks with the context size and idle gap behind each one. `python3 scripts/stats.py` prints the summary, so the next "how is this performing?" question is answered with data. Disable with `FABLE_ORCH_METRICS=0`.
+**Metrics.** Every hook appends one event line to `~/.claude/fable-orch/metrics.jsonl` (events only — never prompt content): injections per model, mid-session profile switches, spawn/task denies and passes, stop blocks and suppressions, reaps, and cold-cache blocks/warns/acks with the context size and idle gap behind each one. `python3 scripts/stats.py` prints the summary, so the next "how is this performing?" question is answered with data. Disable with `FABLE_ORCH_METRICS=0`. Set `FABLE_ORCH_HARNESS=<name>` to add a `"harness": "<name>"` key to every line a run writes — for a non-Claude-Code caller (an adapter that runs these scripts as subprocesses under another CLI's hooks) to tell its own events apart in the same shared log, without touching a byte the core itself wrote. Unset by default: the key is omitted and Claude Code's own output is unchanged.
+
+**Codex CLI transcripts.** The cold-cache guard's `context_tokens()` reads a Codex CLI session JSONL (`~/.codex/sessions/**/*.jsonl`) the same way it reads a Claude Code one — detected by the first line's `type` (`session_meta`), not by an env var, so a Codex `transcript_path` handed to the guard just works. It reads the newest `event_msg`/`token_count` (or the rarer top-level `token_usage_record`) usage line for the current input-context size, falling back to a byte-size estimate when a transcript has no usage line yet.
 
 ## Tests
 
@@ -348,7 +351,7 @@ Set these in `~/.claude/settings.json` under `"env"`.
 python3 -m pytest tests/ -q
 ```
 
-The hooks are plain stdin/stdout JSON filters; the tests run them end-to-end as subprocesses — the spawn threshold and its env override, the fork exemption, Workflow script gating, the task-list gate (counting, one deny per session, session isolation), the upward ledger search and its repo-root/worktree/$HOME boundaries, stop-guard session scoping and ownership, the cold-cache bands (slash commands and teammates never blocked, the ack window and its expiry, tail-only transcript reads, fail-open on every corrupt input), metrics emission and opt-out, injection, the mid-session profile-switch delta, cache cleanup, and teammate reaping (against a fake tmux/ps on PATH). A second layer pins the *content*: the cores stay under their size budget, both keep requiring the playbook skill, and the decisions that survived the diet (fresh-eyes on every close, the fork cap, the report cap, the batching rule) plus the Fable 5.1 additions (ledger assumptions, the whole-ledger recap, the decline false-positive check, the worker spec blocks), the effort-not-selectable-per-spawn correction, and the project-agent-roster rule, are asserted line by line.
+The hooks are plain stdin/stdout JSON filters; the tests run them end-to-end as subprocesses — the spawn threshold and its env override, the fork exemption, Workflow script gating, the task-list gate (counting, one deny per session, session isolation), the upward ledger search and its repo-root/worktree/$HOME boundaries, stop-guard session scoping and ownership, the cold-cache bands (slash commands and teammates never blocked, the ack window and its expiry, tail-only transcript reads, fail-open on every corrupt input), metrics emission and opt-out, the `FABLE_ORCH_HARNESS` stamp (present/absent across all six hook scripts), Codex CLI transcript detection and both its usage-line shapes plus the byte-size fallback, injection, the mid-session profile-switch delta, cache cleanup, and teammate reaping (against a fake tmux/ps on PATH). A second layer pins the *content*: the cores stay under their size budget, both keep requiring the playbook skill, and the decisions that survived the diet (fresh-eyes on every close, the fork cap, the report cap, the batching rule) plus the Fable 5.1 additions (ledger assumptions, the whole-ledger recap, the decline false-positive check, the worker spec blocks), the effort-not-selectable-per-spawn correction, and the project-agent-roster rule, are asserted line by line.
 
 The hooks decide "chair or teammate?" by walking the real process tree, so the suite pins that ambient too — otherwise running the tests from inside a named teammate makes every chair-behaviour test fail for a reason unrelated to the code.
 

@@ -83,7 +83,11 @@ def _is_live_ledger_name(name):
 
 
 def _metric(event, session_id=None, **extra):
-    """Append one event line to ~/.claude/fable-orch/metrics.jsonl (best effort)."""
+    """Append one event line to ~/.claude/fable-orch/metrics.jsonl (best
+    effort). Stamped `"harness": <FABLE_ORCH_HARNESS>` when that env var
+    is set (unset -> key omitted, output unchanged for Claude Code) so an
+    external adapter (e.g. a Codex CLI harness) can tell its own events
+    apart without rewriting this file's bytes after the fact."""
     if (os.environ.get("FABLE_ORCH_METRICS") or "").strip() == "0":
         return
     try:
@@ -93,6 +97,9 @@ def _metric(event, session_id=None, **extra):
         if session_id:
             rec["session"] = str(session_id)[:8]
         rec.update(extra)
+        harness = (os.environ.get("FABLE_ORCH_HARNESS") or "").strip()
+        if harness:
+            rec["harness"] = harness
         with open(os.path.join(d, "metrics.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")
     except Exception:
