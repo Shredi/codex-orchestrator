@@ -266,3 +266,12 @@ def test_main_real_run_is_idempotent_on_second_invocation(codex_sync, home, repo
     assert codex_sync.main(args) == 0
     out = capsys.readouterr().out
     assert "0 of" in out.splitlines()[-1] or "\n0 of" in out
+
+
+def test_frontmatter_double_quoted_scalar_is_unescaped(codex_sync):
+    fm, _ = codex_sync.parse_frontmatter(
+        '---\nname: x\ndescription: "Answer any \\"what does X say\\" question"\n---\nbody\n'
+    )
+    assert fm["description"] == 'Answer any "what does X say" question'
+    # and the TOML emitter round-trips it as a plain quote, not \\"
+    assert codex_sync._toml_str(fm["description"]) == '"Answer any \\"what does X say\\" question"'

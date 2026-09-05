@@ -194,7 +194,10 @@ _KEY_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):[ \t]?(.*)$")
 def _coerce_value(buf: list[str]):
     raw = " ".join(s.strip() for s in buf if s.strip() != "").strip()
     if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
-        return raw[1:-1]
+        # YAML double-quoted scalar: unescape \" and \\ (the two escapes
+        # Claude Code agent frontmatter actually uses) so the TOML emitter
+        # does not double-escape them into a literal backslash-quote.
+        return raw[1:-1].replace('\\"', '"').replace("\\\\", "\\")
     if raw.startswith("{") or raw.startswith("["):
         return json.loads(raw)
     return raw
