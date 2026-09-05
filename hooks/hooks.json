@@ -1,0 +1,89 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/inject_instructions.py\"",
+            "timeout": 10,
+            "statusMessage": "Orchestrator instructions"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/cold_cache_guard.py\"",
+            "timeout": 10,
+            "statusMessage": "Cold-cache guard"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^(Agent|Task|Workflow|TaskCreate)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/ledger_guard_spawn.py\"",
+            "timeout": 10,
+            "statusMessage": "Ledger guard (spawn/tasks)"
+          }
+        ]
+      },
+      {
+        "matcher": "^Write$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/ledger_guard_write.py\"",
+            "timeout": 10,
+            "statusMessage": "Ledger guard (overwrite)"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(Write|Edit|MultiEdit)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/ledger_bind.py\"",
+            "timeout": 10,
+            "statusMessage": "Ledger guard (session binding)"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/ledger_guard_stop.py\"",
+            "timeout": 10,
+            "statusMessage": "Ledger guard (close)"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/cleanup_session_cache.py\"",
+            "timeout": 20,
+            "statusMessage": "Orchestrator cleanup (cache + teammates)"
+          }
+        ]
+      }
+    ]
+  }
+}
