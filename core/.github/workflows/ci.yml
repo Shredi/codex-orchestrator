@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash  # explicit bash enables pipefail — `cmd | tail` can't mask a red exit
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        # hooks shell out to ps/tmux (BSD vs procps differs); windows-latest
+        # runs the same guards/injection/cleanup with tmux-teammate features
+        # degraded to no-ops (D2) — the POSIX-only mechanics (symlink, getuid,
+        # chmod, flock, fake ps/tmux fixtures) are skipmarked in conftest.py.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install pytest
+      - run: python -m pytest tests/ -q

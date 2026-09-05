@@ -1,0 +1,15 @@
+{
+  "name": "fable-orchestrator",
+  "description": "Fable 5-first multi-agent orchestration for Claude Code: a token-frugal chair profile with tier routing (Sonnet 5 carries the volume, Opus 5 the hard slices), workers routed by tier rather than by a per-spawn effort dial, a Requirements Ledger, guard hooks that enforce the discipline, and automatic teammate reaping.",
+  "owner": {
+    "name": "Yusuf Demirkoparan",
+    "url": "https://github.com/Rylaa"
+  },
+  "plugins": [
+    {
+      "name": "orchestrator",
+      "source": "./",
+      "description": "Fable 5-first multi-agent orchestration: a token-frugal chair profile with tier routing, a Requirements Ledger, guard hooks that enforce the discipline mechanically, and automatic teammate reaping."
+    }
+  ]
+}
