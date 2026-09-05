@@ -237,12 +237,18 @@ error=Tool call blocked by PreToolUse hook: LEDGER GUARD: this looks like a deta
 {"event": "spawn_deny", "chars": 1956, "threshold": 1500, "tool": "Agent", "harness": "codex"}
 ```
 
-Still not exercised live: the `cold_cache_guard` block band (needs a
-Codex session left idle past the cold threshold — and see the divergence
-note above: `context_tokens()` cannot read a Codex transcript, so the
-band is inert until that lands upstream in `core/`), and the
+Still not exercised live: the `cold_cache_guard` block band itself
+(needs a Codex session left idle past the cold threshold), and the
 `CODEX_ADAPTER_EXIT2=1` signalling path (tests only; the JSON schema
-works, so there is no reason to switch).
+works, so there is no reason to switch). Its *input* is confirmed since
+`core-v2`, though — `context_tokens()` on a live Codex rollout JSONL
+returned `16108` on 2026-09-05, where `core-v1` returned `None`, so the
+band is armed rather than inert:
+
+```
+$ python3 -c "…; print(m.context_tokens('~/.codex/sessions/2026/09/05/rollout-…-01a0733c-….jsonl'))"
+16108
+```
 
 **Re-installing after a change** — the plugin cache is a *copy* of this
 repo, so edits do not take effect until:
