@@ -1,0 +1,16 @@
+# OpenRouter free/stealth models via a Codex custom provider
+# (model_providers.openrouter in ~/.codex/config.toml, wire_api = "responses",
+# API key referenced by path — see the P1 ledger item). One configurable
+# model for every tier: edit `[single]` below and every tier (chair, fable,
+# opus, sonnet, cheap) resolves to it — there is deliberately no per-tier
+# routing here, this profile exists for cheap/experimental work only.
+#
+#   NEVER FOR CUSTOMER OR CREDENTIAL WORK — existing rule (see CLAUDE.md
+#   "claude-open OpenRouter wrapper" precedent). Stealth/free OpenRouter
+#   models have no data-handling guarantee.
+provider = "openrouter-free"
+note = "never customer/credential work"
+
+[single]
+model = "openrouter/openrouter/omen-alpha"
+model_reasoning_effort = "medium"

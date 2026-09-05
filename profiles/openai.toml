@@ -1,0 +1,32 @@
+# Codex CLI on the OpenAI subscription (ChatGPT login). Model ids verified
+# 2026-09-05 against developers.openai.com/api/docs/models/{gpt-6-astra,
+# gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna} — these are the exact API `model=`
+# strings, not marketing names. GPT-5.6 Terra is deliberately unused (worse
+# $/capability than Sol/Luna for this tier map — see the plan's rationale).
+provider = "openai"
+
+[tiers.chair]
+model = "gpt-6-astra"
+model_reasoning_effort = "high"
+# Falls back to this model while Astra isn't yet rolled out to the
+# account/CLI version (ledger P5 assumption #23). codex-sync / the adapter
+# should try `model`, and on a "model not available" error use
+# `chair_fallback` instead — not verified end-to-end here (no live Codex
+# session in this worker), so treat as a documented intent, not a tested path.
+chair_fallback = "gpt-5.6-sol"
+
+[tiers.fable]
+model = "gpt-6-astra"
+model_reasoning_effort = "high"
+
+[tiers.opus]
+model = "gpt-5.6-sol"
+model_reasoning_effort = "high"
+
+[tiers.sonnet]
+model = "gpt-5.6-luna"
+model_reasoning_effort = "xhigh"
+
+[tiers.cheap]
+model = "gpt-5.6-luna"
+model_reasoning_effort = "low"

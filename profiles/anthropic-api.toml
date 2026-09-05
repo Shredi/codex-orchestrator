@@ -1,0 +1,28 @@
+# Anthropic models reachable from Codex CLI via a custom `model_providers`
+# entry backed by an Anthropic API key — NOT the Claude Code subscription
+# (that's the Claude Code harness itself, out of scope for this repo).
+# Only usable when an Anthropic API-key provider is configured in
+# ~/.codex/config.toml; otherwise these model ids will 404.
+#
+# No model_reasoning_effort here: that field is an OpenAI reasoning-model
+# concept (minimal…xhigh); Anthropic's equivalent (extended thinking token
+# budgets) isn't the same shape, and the profile schema treats the field as
+# optional per-tier rather than force a fake mapping. Left for the adapter/
+# custom-provider config to translate if Codex's `wire_api` for Anthropic
+# ever exposes an effort-like knob.
+provider = "anthropic-api"
+
+[tiers.chair]
+model = "claude-fable-5-1"
+
+[tiers.fable]
+model = "claude-fable-5-1"
+
+[tiers.opus]
+model = "claude-opus-5"
+
+[tiers.sonnet]
+model = "claude-sonnet-5"
+
+[tiers.cheap]
+model = "claude-haiku-4-5"
