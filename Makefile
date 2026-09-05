@@ -2,7 +2,10 @@
 #
 # core/ is a `git subtree` vendor of fable5-opus5-orchestrator (the Claude
 # repo, which owns scripts/instructions/skills/playbook/tests). A fix lands
-# there, gets tagged `core-vN` (see that repo's `make tag-core VERSION=vN`
+# there, gets tagged `core-vN`. skills/playbook is a REAL COPY of
+# core/skills/playbook (Codex's plugin cache copy drops symlinks), refreshed
+# by this target.
+# (see that repo's `make tag-core VERSION=vN`
 # on the `core-tagging` branch), and is pulled in here.
 #
 # SOURCE defaults to the sibling checkout used during development; override
@@ -19,8 +22,9 @@ pull-core:
 	fi
 	git subtree pull --prefix=core $(SOURCE) $(TAG) --squash -m "core: pull $(TAG)"
 	echo "$(TAG)" > core/VERSION
-	git add core/VERSION
-	git commit -m "chore: core/VERSION -> $(TAG)"
+	rm -rf skills/playbook && cp -R core/skills/playbook skills/playbook
+	git add core/VERSION skills/playbook
+	git commit -m "chore: core/VERSION -> $(TAG); skills/playbook refreshed from core"
 	@echo "pulled $(TAG) into core/, core/VERSION updated"
 
 # Two SEPARATE pytest invocations, not one combined `pytest core/tests tests`

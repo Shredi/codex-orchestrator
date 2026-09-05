@@ -79,3 +79,15 @@ def test_every_profile_resolves_all_five_tiers(name, codex_sync):
     for tier in ("chair", "fable", "opus", "sonnet", "cheap"):
         model, _effort = codex_sync.resolve_tier(data, tier)
         assert model, f"{name} profile has no model for tier {tier!r}"
+
+
+def test_playbook_skill_is_a_real_copy_of_core():
+    """Codex copies the plugin into ~/.codex/plugins/cache/ and drops symlinks;
+    a symlinked skills/playbook silently vanished (verifier, 2026-09-06)."""
+    import filecmp
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    sk = root / "skills" / "playbook"
+    assert sk.is_dir() and not sk.is_symlink()
+    for f in ("SKILL.md", "spec-blocks.md"):
+        assert filecmp.cmp(sk / f, root / "core" / "skills" / "playbook" / f, shallow=False)
