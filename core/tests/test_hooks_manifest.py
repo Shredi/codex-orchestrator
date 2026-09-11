@@ -81,6 +81,25 @@ def test_pretooluse_runs_write_guard():
     assert any("ledger_guard_write.py" in c for c in commands)
 
 
+def test_pretooluse_runs_the_destructive_guard_on_bash():
+    matcher = _matcher_for("PreToolUse", "Bash")
+    assert matcher is not None, "no PreToolUse matcher covers Bash"
+    assert not re.compile(matcher).search("BashOutput"), "matcher over-matches"
+    entries = [e for e in _manifest()["PreToolUse"]
+               if re.compile(e["matcher"]).search("Bash")]
+    commands = [h["command"] for e in entries for h in e["hooks"]]
+    assert any("destructive_guard.py" in c for c in commands)
+
+
+def test_sessionstart_installs_the_rm_shim():
+    # Layer B is only a guard while it is on PATH, so its installer runs
+    # at every session start alongside the instruction injector.
+    commands = [h["command"] for e in _manifest()["SessionStart"]
+                for h in e["hooks"]]
+    assert any("inject_instructions.py" in c for c in commands)
+    assert any("destructive_guard_install.py" in c for c in commands)
+
+
 def test_posttooluse_runs_ledger_bind():
     entry = next(e for e in _manifest()["PostToolUse"]
                  if re.compile(e["matcher"]).search("Write"))

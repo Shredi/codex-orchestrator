@@ -10,6 +10,16 @@
             "statusMessage": "Orchestrator instructions"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/destructive_guard_install.py\"",
+            "timeout": 10,
+            "statusMessage": "Destructive guard (rm shim)"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -44,6 +54,17 @@
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/ledger_guard_write.py\"",
             "timeout": 10,
             "statusMessage": "Ledger guard (overwrite)"
+          }
+        ]
+      },
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/destructive_guard.py\"",
+            "timeout": 10,
+            "statusMessage": "Destructive guard (bash)"
           }
         ]
       }
