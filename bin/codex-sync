@@ -19,8 +19,12 @@ Steps performed (see README.md "Layout" for the full rationale):
       already present, sourced from ~/.claude.json and (with --repo) the
       repo's own .mcp.json — never with secret values, only structure + the
       env var name to fill in (see `_redact_env`).
+  (f) ~/.claude/guard/bin/rm                installed from core/guard/rm (Layer B
+      of the destructive-command guard, core-v3)
+  (g) [shell_environment_policy] set.PATH   in ~/.codex/config.toml, so that shim
+      is ahead of /bin/rm for every command Codex runs
 
-(a) and (d) and (e)'s ~/.claude.json half always run ("global" steps).
+(a), (d), (f), (g) and (e)'s ~/.claude.json half always run ("global" steps).
 (b), (c) and (e)'s repo-.mcp.json half only run when --repo is given.
 --global forces the global steps to run even though --repo is also given
 (this is already the default — the flag exists to make an invocation that
@@ -29,7 +33,8 @@ combines both explicit, and to document the split for `--dry-run` review).
 Idempotent: every write is compared against its current content first and
 skipped when unchanged; reports "unchanged" in the drift summary instead of
 rewriting. Never overwrites an existing AGENTS.md, and never overwrites a
-[mcp_servers.<name>] section that's already in ~/.codex/config.toml.
+[mcp_servers.<name>] section that's already in ~/.codex/config.toml, and
+never touches a key in [shell_environment_policy] other than set.PATH.
 """
 from __future__ import annotations
 
@@ -511,6 +516,154 @@ def sync_mcp_servers(home: Path, repo: Path | None, dry_run: bool) -> list[tuple
 
 
 # --------------------------------------------------------------------------
+# Destructive-command guard, Layer B (core-v3) — the `rm` shim and its PATH
+#
+# Claude Code gets the shim in front of /bin/rm twice over: a SessionStart
+# hook installs it and appends the PATH export to $CLAUDE_ENV_FILE, and the
+# PreToolUse guard additionally rewrites rm-bearing commands via
+# `updatedInput`. Codex has neither route — it accepts `updatedInput` only
+# alongside `permissionDecision: "allow"` (hooks docs, read 2026-09-11),
+# which would turn the guard into a blanket approval. So the PATH comes from
+# config: `[shell_environment_policy]` is the documented place, and its
+# `set` map ("explicit environment values injected after exclusions") is the
+# only knob there — no prepend form exists. The guard dir is therefore joined
+# onto the current PATH here and the resulting literal is what Codex hands
+# every subprocess. `inherit` is left alone (default "all"): `set` overrides
+# PATH only, everything else still comes from the parent environment.
+#
+# Because the value is a literal, it is pinned at the moment it is first
+# written. Later runs re-prepend the guard dir to the value already in the
+# file rather than to whatever PATH this process happens to have, so the
+# merge is idempotent and a shell-config change never silently rewrites it;
+# to adopt a new PATH, delete the `PATH` entry and re-run codex-sync.
+# --------------------------------------------------------------------------
+
+GUARD_BIN_DIR = Path(".claude") / "guard" / "bin"
+SHELL_ENV_SECTION = "shell_environment_policy"
+
+
+def install_rm_shim(home: Path, dry_run: bool) -> list[tuple[str, str]]:
+    """core/guard/rm -> ~/.claude/guard/bin/rm (0755, atomic replace)."""
+    label = "~/.claude/guard/bin/rm"
+    src = repo_root() / "core" / "guard" / "rm"
+    if not src.is_file():
+        return [(label, "skipped (core/guard/rm absent — run `make pull-core TAG=core-v3`)")]
+    dst = home / GUARD_BIN_DIR / "rm"
+    content = src.read_bytes()
+    existed = dst.is_file()
+    if existed and dst.read_bytes() == content and dst.stat().st_mode & 0o111:
+        return [(label, "unchanged")]
+    if dry_run:
+        return [(label, "would-update" if existed else "would-create")]
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    # Atomic: a half-written file named `rm` at the front of PATH would
+    # break every shell on this machine, guard or no guard.
+    tmp = dst.with_name(dst.name + ".codex-sync.tmp")
+    tmp.write_bytes(content)
+    tmp.chmod(0o755)
+    os.replace(tmp, dst)
+    return [(label, "updated" if existed else "created")]
+
+
+def guard_path_value(guard_dir: str, current: str) -> str:
+    """`guard_dir` first, every other entry of `current` after it, once."""
+    rest = [p for p in current.split(os.pathsep) if p and p != guard_dir]
+    return os.pathsep.join([guard_dir] + rest)
+
+
+def _inline_set(table: dict) -> str:
+    return "set = { " + ", ".join(f"{k} = {_toml_value(v)}" for k, v in table.items()) + " }"
+
+
+def _section_bounds(lines: list[str], header: str) -> tuple[int, int] | None:
+    """(header index, index of the next table header) for `[header]`."""
+    for i, line in enumerate(lines):
+        if line.strip() == f"[{header}]":
+            for j in range(i + 1, len(lines)):
+                if lines[j].lstrip().startswith("["):
+                    return i, j
+            return i, len(lines)
+    return None
+
+
+def merge_shell_env_path(text: str, existing_set: dict, path_value: str) -> str:
+    """Set `PATH` in [shell_environment_policy].set, touching nothing else.
+
+    Handles all four shapes the section can already have: a
+    `[shell_environment_policy.set]` sub-table (replace or insert the PATH
+    line), an inline `set = { … }` (re-render it with the other keys kept),
+    the section without a `set` at all, and no section at all.
+    """
+    lines = text.splitlines()
+
+    sub = _section_bounds(lines, f"{SHELL_ENV_SECTION}.set")
+    if sub:
+        i, j = sub
+        entry = f"PATH = {_toml_str(path_value)}"
+        for k in range(i + 1, j):
+            if re.match(r"""\s*(?:PATH|["']PATH["'])\s*=""", lines[k]):
+                lines[k] = entry
+                break
+        else:
+            lines.insert(i + 1, entry)
+        return "\n".join(lines) + "\n"
+
+    merged = dict(existing_set)
+    merged["PATH"] = path_value
+    main = _section_bounds(lines, SHELL_ENV_SECTION)
+    if main:
+        i, j = main
+        for k in range(i + 1, j):
+            if re.match(r"\s*set\s*=", lines[k]):
+                lines[k] = _inline_set(merged)
+                break
+        else:
+            lines.insert(i + 1, _inline_set(merged))
+        return "\n".join(lines) + "\n"
+
+    block = [
+        "# --- added by codex-sync: destructive-command guard (Layer B) ---",
+        "# ~/.claude/guard/bin/rm must sit in front of /bin/rm for every command",
+        "# Codex runs. `set` takes a literal, so this is the PATH as it stood when",
+        "# codex-sync first wrote it; delete the PATH entry and re-run to refresh.",
+        f"[{SHELL_ENV_SECTION}]",
+        _inline_set(merged),
+    ]
+    prefix = (text if text.endswith("\n") else text + "\n") + "\n" if text.strip() else ""
+    return prefix + "\n".join(block) + "\n"
+
+
+def sync_shell_env_path(home: Path, dry_run: bool) -> list[tuple[str, str]]:
+    config_toml = home / ".codex" / "config.toml"
+    label = "shell_environment_policy.set.PATH"
+    text = config_toml.read_text(encoding="utf-8") if config_toml.exists() else ""
+    try:
+        data = tomllib.loads(text) if text else {}
+    except tomllib.TOMLDecodeError:
+        # Unlike the mcp step there is no safe text-only fallback here: a
+        # blind append would shadow whatever the unparsable part declares.
+        return [(label, "skipped (config.toml does not parse — merge by hand)")]
+    section = data.get(SHELL_ENV_SECTION)
+    existing_set = section.get("set") if isinstance(section, dict) else None
+    existing_set = existing_set if isinstance(existing_set, dict) else {}
+    existing_path = existing_set.get("PATH")
+    wanted = guard_path_value(
+        str(home / GUARD_BIN_DIR),
+        str(existing_path if existing_path else os.environ.get("PATH", "")),
+    )
+    if existing_path == wanted:
+        return [(label, "unchanged")]
+    if dry_run:
+        return [(label, "would-update" if existing_path else "would-create")]
+    config_toml.parent.mkdir(parents=True, exist_ok=True)
+    merged = merge_shell_env_path(text, existing_set, wanted)
+    tmp = config_toml.with_name(config_toml.name + ".codex-sync.tmp")
+    tmp.write_text(merged, encoding="utf-8")
+    os.replace(tmp, config_toml)
+    return [(label, "updated" if existing_path else "created")]
+
+
+# --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
 
@@ -532,6 +685,8 @@ def main(argv=None) -> int:
     if run_global:
         report += sync_global_tier_agents(args.profile, profile_data, args.home / ".codex", args.dry_run)
         report += sync_skills_farm(args.home, args.dry_run)
+        report += install_rm_shim(args.home, args.dry_run)
+        report += sync_shell_env_path(args.home, args.dry_run)
 
     if args.repo is not None:
         report += sync_project_agents(args.repo, profile_data, args.dry_run)

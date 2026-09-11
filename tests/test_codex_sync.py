@@ -4,6 +4,7 @@ bulwark agent files as frontmatter fixtures where useful, and synthetic
 ones (via the `repo`/`write_agent_md` conftest helpers) for edge cases.
 """
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -238,6 +239,54 @@ def test_collect_mcp_servers_merges_home_and_repo(codex_sync, home, repo):
     )
     servers = codex_sync.collect_mcp_servers(home, repo)
     assert set(servers) == {"home-assistant", "unifi-network"}
+
+
+# --------------------------------------------------------------------------
+# Destructive-command guard, Layer B: the rm shim and its PATH entry
+# --------------------------------------------------------------------------
+
+
+def test_install_rm_shim_copies_executable_and_is_idempotent(codex_sync, home):
+    first = codex_sync.install_rm_shim(home, dry_run=False)
+    shim = home / ".claude" / "guard" / "bin" / "rm"
+    assert dict(first)["~/.claude/guard/bin/rm"] == "created"
+    assert shim.stat().st_mode & 0o111, "the shim is useless if it is not executable"
+    assert shim.read_bytes() == (codex_sync.repo_root() / "core" / "guard" / "rm").read_bytes()
+    second = codex_sync.install_rm_shim(home, dry_run=False)
+    assert dict(second)["~/.claude/guard/bin/rm"] == "unchanged"
+    assert not list(shim.parent.glob("*.tmp")), "atomic write left its temp file behind"
+
+
+def test_sync_shell_env_path_prepends_guard_dir_keeping_other_keys(codex_sync, home, monkeypatch):
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    codex_dir = home / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "config.toml").write_text(
+        '[shell_environment_policy]\ninherit = "core"\nset = { CI = "1" }\n\n'
+        '[mcp_servers.home-assistant]\ncommand = "uvx"\n',
+        encoding="utf-8",
+    )
+    assert dict(codex_sync.sync_shell_env_path(home, dry_run=False))[
+        "shell_environment_policy.set.PATH"] == "created"
+    data = tomllib.loads((codex_dir / "config.toml").read_text(encoding="utf-8"))
+    policy = data["shell_environment_policy"]
+    guard_dir = str(home / ".claude" / "guard" / "bin")
+    assert policy["set"]["PATH"] == f"{guard_dir}:/usr/bin:/bin"
+    assert policy["inherit"] == "core" and policy["set"]["CI"] == "1"
+    assert data["mcp_servers"]["home-assistant"]["command"] == "uvx"
+    # Second run: the guard dir is re-prepended to the value already in the
+    # file, so it must not appear twice and nothing may be rewritten.
+    before = (codex_dir / "config.toml").read_text(encoding="utf-8")
+    assert dict(codex_sync.sync_shell_env_path(home, dry_run=False))[
+        "shell_environment_policy.set.PATH"] == "unchanged"
+    assert (codex_dir / "config.toml").read_text(encoding="utf-8") == before
+
+
+def test_merge_shell_env_path_handles_a_set_subtable(codex_sync):
+    text = '[shell_environment_policy.set]\nCI = "1"\nPATH = "/old"\n'
+    merged = codex_sync.merge_shell_env_path(text, {"CI": "1", "PATH": "/old"}, "/guard:/old")
+    data = tomllib.loads(merged)
+    assert data["shell_environment_policy"]["set"] == {"CI": "1", "PATH": "/guard:/old"}
 
 
 # --------------------------------------------------------------------------
