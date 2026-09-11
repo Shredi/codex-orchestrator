@@ -55,6 +55,19 @@ on a protected path or a variable, `truncate -s 0` on a variable,
 mentioning `SAFE_RM_DRYRUN` or `SAFE_RM_BYPASS` (the shim's dry-run
 switch is for the test suite; there is no in-band bypass).
 
+Self-protection: any WRITE to `~/.claude/guard` (`rm`, `mv`/`cp` over
+it, `chmod`, `ln -sf`, `: >`, `sed -i`, literal or through `~`/`$HOME`)
+is denied — that directory is Layer B, and removing it removes the only
+check that sees expanded arguments. The shim refuses the same operand
+whatever its flags.
+
+Compound statements: a segment's leading shell keywords and grouping
+tokens are stripped before the command word is read, so the rm inside
+`for d in …; do rm -rf "/$d"; done`, `if …; then rm -rf /; fi`,
+`( rm -rf / )`, `{ rm -rf /; }` and `case $x in a) rm -rf $x;; esac` is
+the command this guard judges — not a command called `do`, `then` or
+`(`.
+
 ASK (permissionDecision "ask") for the cases that are dangerous but
 legitimate: a recursive `rm` on a LITERAL path that resolves outside
 the allowed roots (the payload's `cwd`, $TMPDIR, /tmp, /private/tmp,
@@ -138,6 +151,32 @@ FUNC_DEF_RE = re.compile(
 # Applet multiplexers: `busybox rm -rf /` IS an rm.
 MULTIPLEXERS = frozenset(["busybox", "toybox"])
 CD_COMMANDS = frozenset(["cd", "pushd"])
+# Shell keywords and grouping tokens that can stand IN FRONT of the real
+# command word of a segment: `do rm -rf "$d"`, `then rm -rf /`,
+# `( rm -rf / )`, `{ rm -rf /`. Without stripping them the segment reads
+# as a command named `do` / `(` and the rm behind it is invisible.
+KEYWORDS = frozenset([
+    "do", "done", "then", "else", "elif", "fi", "esac", "!",
+    "{", "}", "(", ")", "((", "))",
+])
+# Compound headers: everything up to their `in` belongs to the header.
+KEYWORDS_UNTIL_IN = frozenset(["for", "case", "select"])
+# Headers whose remainder IS a command (`while read f`, `if true`).
+KEYWORDS_BARE = frozenset(["if", "while", "until"])
+OPENERS = {"(": ")", "{": "}", "((": "))"}
+# The guard's own directory — Layer B lives here, so a command that
+# rewrites, moves, empties or un-executes it is disarming the guard.
+GUARD_MARK = ".claude/guard"
+# Commands whose guard-dir operand is a WRITE to it.
+TAMPER_COMMANDS = frozenset([
+    "rm", "unlink", "truncate", "chmod", "chown", "shred", "chflags",
+    "xattr", "mkfifo", "mv",
+])
+# ...`mv` included: moving the shim away removes it just as well. For
+# these only the DESTINATION (last operand) counts, so reading the shim
+# out (`cp …/guard/bin/rm /tmp/copy`) stays allowed.
+TAMPER_DEST_COMMANDS = frozenset(["cp", "ln", "install", "tee", "dd"])
+GUARD_REDIRECT_RE = re.compile(r">\|?\s*[\"']?[^\s;&|>]*" + re.escape(GUARD_MARK))
 BYPASS_STRINGS = ("SAFE_RM_DRYRUN", "SAFE_RM_BYPASS")
 MAX_DEPTH = 4
 
@@ -428,6 +467,65 @@ def _strip_multiplexer(toks):
     return toks
 
 
+def _strip_keywords(toks):
+    """Drop the leading shell keywords and grouping tokens of a segment so
+    what is left is the command the segment actually RUNS.
+
+    `for d in $(ls /); do rm -rf "/$d"; done` splits on `;` into three
+    segments, the middle one being `do rm -rf "/$d"` — read literally that
+    is a command called `do`, and the recursive rm behind it is never
+    examined. Same for `then`, `else`, `( rm -rf / )`, `{ rm -rf /`, a
+    `case` pattern label, and a grouping char glued to the command word
+    (`(rm`). A closing `)`/`}` is removed again at the end, but only as
+    many as this segment opened — so `rm -rf x)` (whatever that is) keeps
+    its operand intact.
+    """
+    toks = list(toks)
+    opened, i = [], 0
+    while i < len(toks):
+        tok = toks[i]
+        if tok in KEYWORDS:
+            if tok in OPENERS:
+                opened.append(OPENERS[tok])
+            i += 1
+            continue
+        if tok in KEYWORDS_UNTIL_IN:
+            j = i + 1
+            while j < len(toks) and toks[j] != "in":
+                j += 1
+            i = j + 1 if j < len(toks) else i + 1
+            continue
+        if tok in KEYWORDS_BARE:
+            i += 1
+            continue
+        if len(tok) > 1 and tok[0] in OPENERS and tok[:2] not in OPENERS:
+            toks[i:i + 1] = [tok[0], tok[1:]]
+            continue
+        # a `case` pattern label: `a)`, `*)`, `x|y)` — only ever reachable
+        # once a keyword before it was stripped.
+        if i and len(tok) > 1 and tok.endswith(")") and "(" not in tok:
+            i += 1
+            continue
+        break
+    rest = toks[i:]
+    while opened and rest:
+        closer = opened[-1]
+        if rest[-1] == closer:
+            rest = rest[:-1]
+        elif len(rest[-1]) > len(closer) and rest[-1].endswith(closer):
+            rest = rest[:-1] + [rest[-1][:-len(closer)]]
+        else:
+            break
+        opened.pop()
+    return rest
+
+
+def _command_tokens(seg):
+    """The tokens of the command a segment runs: keywords stripped, then
+    leading `VAR=…` assignments."""
+    return _strip_assignments(_strip_keywords(_tokens(seg)))
+
+
 def _invokes_rm(text, depth=0):
     """Does this line actually CALL `rm` — as a command word, in a `-c`
     body, behind xargs/eval, in `find -exec`? Unlike a text match this is
@@ -441,7 +539,7 @@ def _invokes_rm(text, depth=0):
             if _invokes_rm(body, depth + 1):
                 return True
             continue
-        toks, _ = _strip_wrappers(_strip_assignments(_tokens(seg)))
+        toks, _ = _strip_wrappers(_command_tokens(seg))
         toks = _strip_multiplexer(toks)
         if not toks:
             continue
@@ -650,13 +748,42 @@ def _check_remote(toks, cwd, depth):
     return None
 
 
+def _mentions_guard(text):
+    return GUARD_MARK in (text or "").replace("\\", "/")
+
+
+def _check_guard_tamper(toks, name):
+    """The guard protecting itself. Layer B is a file — `rm`, `mv`, `cp`
+    over it, `chmod -x`, `: >` it, `ln -sf` something else in its place or
+    `sed -i` it, and the shim that would have caught the expanded argv is
+    simply gone. Reading it (`cat`, `sed -n`, `cp …/guard/bin/rm /tmp/x`)
+    stays allowed; writing to it never is."""
+    operands = [t for t in toks[1:] if not t.startswith("-")]
+    if name in TAMPER_COMMANDS:
+        if any(_mentions_guard(t) for t in toks[1:]):
+            return ("deny", "guard-self-tamper")
+    elif name in TAMPER_DEST_COMMANDS:
+        dest = [t for t in toks[1:] if t.startswith("of=")] or operands[-1:]
+        if any(_mentions_guard(t) for t in dest):
+            return ("deny", "guard-self-tamper")
+    elif name == "sed":
+        in_place = any(t == "-i" or t.startswith("-i") or t == "--in-place"
+                       or t.startswith("--in-place") for t in toks[1:]
+                       if t.startswith("-"))
+        if in_place and any(_mentions_guard(t) for t in operands):
+            return ("deny", "guard-self-tamper")
+    return None
+
+
 def _check_segment(seg, cwd, depth, cwd_unknown=False):
     if REDIRECT_VAR_RE.search(seg):
         return ("deny", "truncating-redirect-to-variable")
+    if _mentions_guard(seg) and GUARD_REDIRECT_RE.search(seg):
+        return ("deny", "guard-self-tamper")
     body = _func_body(seg)
     if body is not None:
         return _check_command(body, cwd, depth + 1, cwd_unknown)
-    toks = _strip_assignments(_tokens(seg))
+    toks = _command_tokens(seg)
     if not toks:
         return None
     toks, bypass = _strip_wrappers(toks)
@@ -665,6 +792,11 @@ def _check_segment(seg, cwd, depth, cwd_unknown=False):
     toks = _strip_multiplexer(toks)
     name = _base(toks[0])
     literal_path = "/" in toks[0] or "\\" in toks[0]
+
+    if _mentions_guard(seg):
+        tamper = _check_guard_tamper(toks, name)
+        if tamper:
+            return tamper
 
     # `RM=rm; $RM -rf /` — the command word itself is a variable, so what
     # runs is unknowable here; a recursive flag behind it is enough.
@@ -705,7 +837,7 @@ def _check_segment(seg, cwd, depth, cwd_unknown=False):
 
 
 def _is_cd(seg):
-    toks, _ = _strip_wrappers(_strip_assignments(_tokens(seg)))
+    toks, _ = _strip_wrappers(_command_tokens(seg))
     return bool(toks) and _base(toks[0]) in CD_COMMANDS
 
 
@@ -788,6 +920,11 @@ REASONS = {
     "truncate-variable": "`truncate -s 0` on a variable path",
     "truncating-redirect-to-variable":
         "a `>` truncation whose target is a variable",
+    "guard-self-tamper":
+        "a write to `~/.claude/guard` — that directory IS Layer B of this "
+        "guard, and a command that deletes, moves, truncates, un-executes "
+        "or rewrites the `rm` shim disarms the only check that sees "
+        "expanded arguments",
     "in-band-bypass":
         "a reference to SAFE_RM_DRYRUN/SAFE_RM_BYPASS — the shim's "
         "dry-run switch belongs to the test suite; there is no in-band "

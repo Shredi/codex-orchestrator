@@ -219,6 +219,70 @@ def test_asks_for_recursive_rm_outside_allowed_roots():
     assert "DESTRUCTIVE_GUARD=0" in reason
 
 
+# --- DENY: rm hidden behind a shell keyword or a grouping token -------------
+
+@pytest.mark.parametrize("command", [
+    'for d in $(ls /); do rm -rf "/$d"; done',   # variable operand
+    "( rm -rf / )",                              # subshell
+    "(rm -rf /)",                                # ...with the paren glued on
+    "{ rm -rf /; }",                             # brace group
+    "if true; then rm -rf /; fi",
+    'while read f; do rm -rf "$f"; done',
+    "until false; do rm -rf $x; done",
+    "case $x in a) rm -rf $x;; esac",
+])
+def test_denies_rm_behind_a_shell_keyword(command):
+    # Split on `;`, the segment carrying the rm starts with `do`/`then`/`(`.
+    # Read literally that is a command called `do`, and the rm is invisible.
+    assert decide(command)[0] == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    'for f in *.log; do echo "$f"; done',
+    "if [ -e x ]; then echo y; fi",
+    "( git status )",
+    "for i in 1 2; do echo $i; done",
+])
+def test_benign_compound_statements_stay_untouched(command):
+    assert decide(command) == ("allow", None)
+
+
+def test_rm_inside_a_loop_body_still_gets_the_prefix():
+    command = 'for f in a b; do rm "$f"; done'
+    decision, out = decide(command)
+    assert decision == "allow"          # not recursive, literal operands
+    assert out["updatedInput"]["command"] == PREFIX + command
+
+
+# --- DENY: the guard protecting itself --------------------------------------
+
+@pytest.mark.parametrize("command", [
+    "rm -rf ~/.claude/guard/bin",
+    "rm ~/.claude/guard/bin/rm",
+    "mv $HOME/.claude/guard/bin/rm /tmp/x",
+    "cp /tmp/plain-rm ~/.claude/guard/bin/rm",
+    "chmod -x ~/.claude/guard/bin/rm",
+    ": > ~/.claude/guard/bin/rm",
+    "ln -sf /bin/rm ~/.claude/guard/bin/rm",
+    "sed -i '' 's/refuse/:/' ~/.claude/guard/bin/rm",
+])
+def test_denies_tampering_with_the_guard_itself(command):
+    # ~/.claude is an allowed root, so without this an agent may delete or
+    # rewrite the shim that checks its own expanded arguments.
+    decision, out = decide(command)
+    assert decision == "deny"
+    assert "~/.claude/guard" in out["permissionDecisionReason"]
+
+
+@pytest.mark.parametrize("command", [
+    "cat ~/.claude/guard/denied.log",
+    "ls ~/.claude/guard/bin",
+    "cp ~/.claude/guard/bin/rm /tmp/backup",   # reading it out is fine
+])
+def test_reading_the_guard_directory_stays_allowed(command):
+    assert decide(command)[0] == "allow"
+
+
 # --- ALLOW -----------------------------------------------------------------
 
 @pytest.mark.parametrize("command", [

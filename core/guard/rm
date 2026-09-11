@@ -17,6 +17,8 @@
 #   - an operand that canonicalises to `/`, a protected top-level
 #     directory, $HOME, or a single-segment /Users/<x>, /home/<x>,
 #     /Volumes/<x>, /mnt/<x>
+#   - any operand inside ~/.claude/guard, whatever the flags: that is
+#     this shim's own directory, and ~/.claude is an allowed root
 #   - a RECURSIVE delete of anything outside the allowed roots:
 #     $PWD, $TMPDIR, /tmp, /private/tmp, /var/folders, ~/.claude,
 #     ~/.workflow, ~/Documents/git
@@ -180,6 +182,14 @@ if [ "$nops" -eq 0 ]; then
 fi
 
 # --- pass 2: operands ------------------------------------------------------
+# The guard's own directory, canonicalised the same way operands are, so
+# `rm -rf ~/.claude/guard/bin` cannot delete Layer B — ~/.claude is an
+# allowed root, which is exactly why this needs its own check.
+GUARD_CANON=$GUARD_DIR
+if [ -d "$GUARD_DIR" ]; then
+    GUARD_CANON=$(canon "$GUARD_DIR")
+fi
+
 end_opts=0
 for arg in "$@"; do
     if [ "$end_opts" -eq 0 ]; then
@@ -200,6 +210,10 @@ for arg in "$@"; do
         *) [ -L "$arg" ] && nofollow=nofollow ;;
     esac
     target=$(canon "$arg" $nofollow)
+    case $target in
+        "$GUARD_DIR"|"$GUARD_DIR"/*|"$GUARD_CANON"|"$GUARD_CANON"/*)
+            refuse "guard-self" "$target" ;;
+    esac
     if is_protected "$target"; then
         refuse "protected path" "$target"
     fi
