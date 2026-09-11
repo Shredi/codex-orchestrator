@@ -213,6 +213,8 @@ Bash <command>                                  Layer A — static, before the s
   │  git clean with a $var or an -e pattern ................ DENY
   ├─ find … -delete / -exec rm -r starting at a variable, a
   │  protected dir, or outside the allowed roots ........... DENY
+  ├─ rm / mv / cp over / chmod / ln -sf / : > / sed -i on
+  │  ~/.claude/guard ....................................... DENY  (self-protection)
   ├─ recursive rm on a LITERAL path outside cwd, $TMPDIR,
   │  /tmp, ~/.claude, ~/.workflow, ~/Documents/git ......... ASK
   ├─ find … -delete / -exec rm -r inside those roots ....... ASK
@@ -225,7 +227,9 @@ $ rm -rf "$dir"/*                               Layer B — the shim, after expa
      line to ~/.claude/guard/denied.log. Otherwise execs the real rm.
 ```
 
-Layer B is installed at every session start to `~/.claude/guard/bin/rm` and prepended to `PATH` through `$CLAUDE_ENV_FILE`; commands that mention `rm` additionally get `export PATH="$HOME/.claude/guard/bin:$PATH"; ` prefixed via `updatedInput`, so the shim wins even when the env file is not honoured. Only rm-bearing commands are rewritten, so `Bash(git *)`-style permission rules keep matching. `DESTRUCTIVE_GUARD=0` disables both layers. `SAFE_RM_DRYRUN=1` makes the shim print `ALLOW`/`REFUSE <reason>` and exit without deleting anything — that is how the test suite exercises it, and it is not a bypass: a command that so much as mentions `SAFE_RM_DRYRUN` or `SAFE_RM_BYPASS` is denied by Layer A.
+Layer B is installed at every session start to `~/.claude/guard/bin/rm` and prepended to `PATH` through `$CLAUDE_ENV_FILE`; commands that mention `rm` additionally get `export PATH="$HOME/.claude/guard/bin:$PATH"; ` prefixed via `updatedInput`, so the shim wins even when the env file is not honoured. Only rm-bearing commands are rewritten, so `Bash(git *)`-style permission rules keep matching. `DESTRUCTIVE_GUARD=0` disables both layers. **Self-protection:** a command that writes to `~/.claude/guard` — deleting, moving, truncating, un-executing or `sed -i`-ing the shim — is denied by Layer A, and the shim itself refuses any operand inside that directory whatever the flags; `~/.claude` is an allowed root, so without this rule an agent could disarm Layer B with one `rm -rf`. Reading it (`cat denied.log`, copying the shim out) stays allowed. `SAFE_RM_DRYRUN=1` makes the shim print `ALLOW`/`REFUSE <reason>` and exit without deleting anything — that is how the test suite exercises it, and it is not a bypass: a command that so much as mentions `SAFE_RM_DRYRUN` or `SAFE_RM_BYPASS` is denied by Layer A.
+
+A segment's leading shell keywords and grouping tokens (`do`, `then`, `else`, `fi`, `esac`, `(`, `{`, a `case` label) are stripped before its command word is read, so the rm inside `for d in …; do rm -rf "/$d"; done`, `if …; then rm -rf /; fi` or `( rm -rf / )` is judged as the rm it is.
 
 **Not covered by design.** The guard knows two things: shell command *text* (Layer A) and an `rm` *argv* (Layer B). Deletion that goes through neither is out of scope — `python3 -c "shutil.rmtree(…)"`, `perl -e 'unlink …'`, `rsync --delete`, and anything a command *writes* rather than runs (`printf '…' | sh`, a generated script). A literal `> file` truncation is out of scope too: only a *variable* redirect target is refused, because a named file is a path the approval could actually read. Layer B still catches whatever of that reaches `rm` by name; nothing catches the rest, so the echo-only/dry-run rule for probing destructive commands stays a rule, not a fallback.
 

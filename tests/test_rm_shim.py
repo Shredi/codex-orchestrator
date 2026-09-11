@@ -99,3 +99,17 @@ def test_allows_a_file_inside_the_working_directory(sandbox):
 
 def test_allows_a_recursive_delete_inside_the_working_directory(sandbox):
     assert dry_run(sandbox, "-rf", "build") == "ALLOW"
+
+
+def test_refuses_to_delete_the_guard_itself(sandbox):
+    """~/.claude is an allowed root, so the shim's own directory needs its
+    own rule — and it holds whatever the flags are."""
+    home, _ = sandbox
+    (home / ".claude" / "guard" / "bin").mkdir(parents=True)
+    guard = home / ".claude" / "guard"
+    assert dry_run(sandbox, "-rf", str(guard)) == "REFUSE guard-self"
+    assert dry_run(sandbox, "-rf", str(guard / "bin")) == "REFUSE guard-self"
+    assert dry_run(sandbox, str(guard / "bin" / "rm")) == "REFUSE guard-self"
+    assert dry_run(sandbox, "-f", str(guard / "denied.log")) == "REFUSE guard-self"
+    # the rest of ~/.claude is unaffected
+    assert dry_run(sandbox, "-rf", str(home / ".claude" / "scratch")) == "ALLOW"
