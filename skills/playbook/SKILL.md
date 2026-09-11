@@ -95,7 +95,10 @@ original request, the ledger path and the work-product paths (diffs,
 reports, not the raw scratch dump). It reads from disk to find what
 is missing, wrong or unaddressed, item by item; only it closes `V.`.
 Findings become new phases; re-verify. CAP 3 cycles, then STOP and
-report the open items.
+report the open items. Destructive commands are PROBED, never run:
+verifier and workers use `echo`/dry-run for anything with `rm`,
+`truncate`, `git clean` or `dd` — on 2026-09-09 a test
+`rm -rf -- "$1"/*` with an empty `$1` wiped a machine.
 
 ## Declines — fix the input
 
