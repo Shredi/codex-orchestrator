@@ -398,6 +398,54 @@ def test_shell_write_targets_unit(adapter_mod, tmp_path):
     assert f("cat .workflow/LEDGER-a.md", str(tmp_path)) == []
 
 
+# --- PreToolUse: destructive guard ------------------------------------
+#
+# The command strings below are STRINGS in a JSON payload and nothing
+# else: the adapter only ever hands them to the core guard's parser. No
+# test in this file runs an `rm`.
+
+def test_destructive_guard_denies_the_incident_line(sandbox):
+    """The 2026-09-09 payload, verbatim, through the Codex path."""
+    _, repo, tmp = sandbox
+    payload = fixture("pre_tool_use_shell", cwd=str(repo))
+    payload["tool_input"]["command"] = 'bash -c \'rm -rf -- "$1"/*\' x ""'
+    rc, out, _ = run_adapter("destructive_guard", payload, tmp)
+    assert rc == 0
+    hso = out["hookSpecificOutput"]
+    assert hso["hookEventName"] == "PreToolUse"
+    assert hso["permissionDecision"] == "deny"
+    assert hso["permissionDecisionReason"].startswith("DESTRUCTIVE GUARD: ")
+
+
+def test_destructive_guard_turns_the_ask_band_into_a_deny(sandbox, adapter_mod):
+    """Codex parses `permissionDecision: "ask"` but does not honour it —
+    it fails the hook run and lets the tool call through. That is the one
+    verdict that must not become an allow, so the adapter denies."""
+    _, repo, tmp = sandbox
+    payload = fixture("pre_tool_use_shell", cwd=str(repo))
+    payload["tool_input"]["command"] = "rm -rf /Users/marc/Documents/other/build"
+    rc, out, _ = run_adapter("destructive_guard", payload, tmp)
+    assert rc == 0
+    hso = out["hookSpecificOutput"]
+    assert hso["permissionDecision"] == "deny"
+    reason = hso["permissionDecisionReason"]
+    assert reason.startswith("DESTRUCTIVE GUARD: ")     # the core's own ask reason
+    assert reason.endswith(adapter_mod.CODEX_ASK_NOTE)  # ...plus why it is a deny
+
+
+def test_destructive_guard_drops_the_path_prefix_rewrite(sandbox):
+    """An allowed rm gets `updatedInput` from the core (the Layer B PATH
+    prefix). Codex accepts that only next to `permissionDecision: allow`,
+    which would be a blanket approval — so it is dropped, and a rewrite-
+    only verdict becomes no output at all rather than a broken one."""
+    _, repo, tmp = sandbox
+    payload = fixture("pre_tool_use_shell", cwd=str(repo))
+    payload["tool_input"]["command"] = "rm -rf ./build"
+    rc, out, _ = run_adapter("destructive_guard", payload, tmp)
+    assert rc == 0
+    assert out is None
+
+
 # --- PostToolUse: ledger_bind -----------------------------------------
 
 def test_post_tool_use_binds_the_session_to_the_ledger(sandbox):

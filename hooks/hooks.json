@@ -39,6 +39,17 @@
         ]
       },
       {
+        "matcher": "^(Bash|shell|exec|local_shell|container_exec|run_command)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/codex_adapter.py\" destructive_guard",
+            "commandWindows": "python \"${CLAUDE_PLUGIN_ROOT}\\scripts\\codex_adapter.py\" destructive_guard",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "^(apply_patch|applypatch|write_file|edit_file|create_file|Write|Bash|shell|exec|local_shell)$",
         "hooks": [
           {
