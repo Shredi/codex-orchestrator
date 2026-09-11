@@ -195,6 +195,40 @@ Write <path>
 
 `LEDGER_WRITE_GUARD=0` disables it. It only reads — no lock needed — so it runs identically on macOS/Linux/Windows.
 
+**Destructive-command guard** (`PreToolUse` on `Bash`, plus a `SessionStart` installer) — the other three guards protect the *workflow*; this one protects the *machine*. It exists because on 2026-09-09 an agent "tested" a rescue one-liner, `bash -c 'rm -rf -- "$dir"/*'`, in a throwaway shell with `$dir` unset. The shell expanded it to `rm -rf /*`; approval only ever saw the harmless-looking text. Two layers, because neither alone is enough:
+
+```
+Bash <command>                                  Layer A — static, before the shell
+  │
+  ├─ recursive rm, operand is a VARIABLE, EMPTY,
+  │  `/`, `/*`, a protected top-level dir, ~ or $HOME ...... DENY
+  ├─ recursive rm behind sudo / command -p / env -i /
+  │  a literal /bin/rm ..................................... DENY  (shim bypasses)
+  ├─ recursive rm inside bash -c / eval / xargs, a function
+  │  body, busybox rm, behind a $VAR command word .......... DENY  (operands invisible)
+  ├─ recursive rm on * / . / .. after a cd in the line ..... DENY  (not the cwd shown)
+  ├─ recursive rm inside ssh / docker exec / kubectl exec .. DENY  (no shim over there)
+  ├─ dd of=/dev/…, mkfs*, diskutil erase*, chmod/chown -R on
+  │  a system path, truncate -s 0 $var, shred, > $var,
+  │  git clean with a $var or an -e pattern ................ DENY
+  ├─ find … -delete / -exec rm -r starting at a variable, a
+  │  protected dir, or outside the allowed roots ........... DENY
+  ├─ recursive rm on a LITERAL path outside cwd, $TMPDIR,
+  │  /tmp, ~/.claude, ~/.workflow, ~/Documents/git ......... ASK
+  ├─ find … -delete / -exec rm -r inside those roots ....... ASK
+  └─ everything else ....................................... PASS
+
+$ rm -rf "$dir"/*                               Layer B — the shim, after expansion
+  └─ ~/.claude/guard/bin/rm (first on PATH) sees the EXPANDED argv:
+     no operands, an empty operand, a protected path, or a recursive
+     delete outside the allowed roots → refuses, exits 1, appends one
+     line to ~/.claude/guard/denied.log. Otherwise execs the real rm.
+```
+
+Layer B is installed at every session start to `~/.claude/guard/bin/rm` and prepended to `PATH` through `$CLAUDE_ENV_FILE`; commands that mention `rm` additionally get `export PATH="$HOME/.claude/guard/bin:$PATH"; ` prefixed via `updatedInput`, so the shim wins even when the env file is not honoured. Only rm-bearing commands are rewritten, so `Bash(git *)`-style permission rules keep matching. `DESTRUCTIVE_GUARD=0` disables both layers. `SAFE_RM_DRYRUN=1` makes the shim print `ALLOW`/`REFUSE <reason>` and exit without deleting anything — that is how the test suite exercises it, and it is not a bypass: a command that so much as mentions `SAFE_RM_DRYRUN` or `SAFE_RM_BYPASS` is denied by Layer A.
+
+**Not covered by design.** The guard knows two things: shell command *text* (Layer A) and an `rm` *argv* (Layer B). Deletion that goes through neither is out of scope — `python3 -c "shutil.rmtree(…)"`, `perl -e 'unlink …'`, `rsync --delete`, and anything a command *writes* rather than runs (`printf '…' | sh`, a generated script). A literal `> file` truncation is out of scope too: only a *variable* redirect target is refused, because a named file is a path the approval could actually read. Layer B still catches whatever of that reaches `rm` by name; nothing catches the rest, so the echo-only/dry-run rule for probing destructive commands stays a rule, not a fallback.
+
 ### 4 · Cold-cache guard
 
 The guards above protect the *workflow*. This one protects the *limit*, and it exists because an audit of one chair's traffic found the money somewhere nobody looks — not in long sessions or big outputs, but in short messages typed into old ones.
@@ -273,7 +307,7 @@ Requires `python3` on PATH. **Windows** works too: the ledger guards, the Sessio
 
 ### Manual install (without the plugin system)
 
-1. Copy `scripts/ledger_guard_spawn.py`, `scripts/ledger_guard_stop.py`, and `scripts/cleanup_session_cache.py` to `~/.claude/hooks/`.
+1. Copy `scripts/ledger_guard_spawn.py`, `scripts/ledger_guard_stop.py`, and `scripts/cleanup_session_cache.py` to `~/.claude/hooks/`. For the destructive-command guard, also copy `scripts/destructive_guard.py` (PreToolUse, matcher `^Bash$`) and `scripts/destructive_guard_install.py` (SessionStart) there, and copy `guard/rm` to `~/.claude/guard/bin/rm` (`chmod 755`) — or let the SessionStart hook place it for you.
 2. Merge this into `~/.claude/settings.json`:
 
 ```json
@@ -325,6 +359,8 @@ Set these in `~/.claude/settings.json` under `"env"`.
 │ LEDGER_GUARD_TASKS            │ 3                │ 3rd ledgerless tracker task denied; 0 off  │
 │ LEDGER_GUARD_STOP_MODE        │ once-per-session │ every-turn restores per-turn blocking      │
 │ LEDGER_WRITE_GUARD            │ (on)             │ 0 disables the ledger overwrite guard      │
+│ DESTRUCTIVE_GUARD             │ (on)             │ 0 disables the rm guard AND its shim       │
+│ SAFE_RM_DRYRUN                │ (off)            │ 1 makes the shim print a verdict, not run  │
 │ FABLE_ORCH_METRICS            │ (on)             │ 0 disables local metrics logging           │
 │ FABLE_ORCH_SWARM_CLEANUP      │ (on)             │ 0 disables all teammate reaping            │
 │ FABLE_ORCH_SWARM_MAX_IDLE_H   │ 48               │ sweep swarms idle ≥ N hours; 0 disables    │
@@ -341,7 +377,7 @@ Set these in `~/.claude/settings.json` under `"env"`.
 
 **The session marker.** The SessionStart injector writes a per-session temp file whose immutable `started` timestamp survives resume/clear/compact re-injections, and the SessionEnd reaper anchors its cleanup to it. It also carries the cold-cache guard's activity stamps (`last_stop`, `last_prompt`) and, while a block is outstanding, its acknowledgement. The same file carries the D1 `ledger` binding: bound → the close guard holds only that ledger; a marker that exists but was never bound → the close guard never holds it; no marker at all (manual install) → the original mtime-ownership rule (ledger touched after the session started). The SessionEnd hook removes the session's temp files and sweeps any older than 96 hours.
 
-**Metrics.** Every hook appends one event line to `~/.claude/fable-orch/metrics.jsonl` (events only — never prompt content): injections per model, mid-session profile switches, spawn/task denies and passes, stop blocks and suppressions, reaps, and cold-cache blocks/warns/acks with the context size and idle gap behind each one. `python3 scripts/stats.py` prints the summary, so the next "how is this performing?" question is answered with data. Disable with `FABLE_ORCH_METRICS=0`. Set `FABLE_ORCH_HARNESS=<name>` to add a `"harness": "<name>"` key to every line a run writes — for a non-Claude-Code caller (an adapter that runs these scripts as subprocesses under another CLI's hooks) to tell its own events apart in the same shared log, without touching a byte the core itself wrote. Unset by default: the key is omitted and Claude Code's own output is unchanged.
+**Metrics.** Every hook appends one event line to `~/.claude/fable-orch/metrics.jsonl` (events only — never prompt content): injections per model, mid-session profile switches, spawn/task denies and passes, stop blocks and suppressions, reaps, cold-cache blocks/warns/acks with the context size and idle gap behind each one, and the destructive-command guard's denies/asks (the rule that fired plus the first 60 characters of the command — never more). `python3 scripts/stats.py` prints the summary, so the next "how is this performing?" question is answered with data. Disable with `FABLE_ORCH_METRICS=0`. Set `FABLE_ORCH_HARNESS=<name>` to add a `"harness": "<name>"` key to every line a run writes — for a non-Claude-Code caller (an adapter that runs these scripts as subprocesses under another CLI's hooks) to tell its own events apart in the same shared log, without touching a byte the core itself wrote. Unset by default: the key is omitted and Claude Code's own output is unchanged.
 
 **Codex CLI transcripts.** The cold-cache guard's `context_tokens()` reads a Codex CLI session JSONL (`~/.codex/sessions/**/*.jsonl`) the same way it reads a Claude Code one — detected by the first line's `type` (`session_meta`), not by an env var, so a Codex `transcript_path` handed to the guard just works. It reads the newest `event_msg`/`token_count` (or the rarer top-level `token_usage_record`) usage line for the current input-context size, falling back to a byte-size estimate when a transcript has no usage line yet.
 
@@ -351,7 +387,7 @@ Set these in `~/.claude/settings.json` under `"env"`.
 python3 -m pytest tests/ -q
 ```
 
-The hooks are plain stdin/stdout JSON filters; the tests run them end-to-end as subprocesses — the spawn threshold and its env override, the fork exemption, Workflow script gating, the task-list gate (counting, one deny per session, session isolation), the upward ledger search and its repo-root/worktree/$HOME boundaries, stop-guard session scoping and ownership, the cold-cache bands (slash commands and teammates never blocked, the ack window and its expiry, tail-only transcript reads, fail-open on every corrupt input), metrics emission and opt-out, the `FABLE_ORCH_HARNESS` stamp (present/absent across all six hook scripts), Codex CLI transcript detection and both its usage-line shapes plus the byte-size fallback, injection, the mid-session profile-switch delta, cache cleanup, and teammate reaping (against a fake tmux/ps on PATH). A second layer pins the *content*: the cores stay under their size budget, both keep requiring the playbook skill, and the decisions that survived the diet (fresh-eyes on every close, the fork cap, the report cap, the batching rule) plus the Fable 5.1 additions (ledger assumptions, the whole-ledger recap, the decline false-positive check, the worker spec blocks), the effort-not-selectable-per-spawn correction, and the project-agent-roster rule, are asserted line by line.
+The hooks are plain stdin/stdout JSON filters; the tests run them end-to-end as subprocesses — the spawn threshold and its env override, the fork exemption, Workflow script gating, the task-list gate (counting, one deny per session, session isolation), the upward ledger search and its repo-root/worktree/$HOME boundaries, stop-guard session scoping and ownership, the cold-cache bands (slash commands and teammates never blocked, the ack window and its expiry, tail-only transcript reads, fail-open on every corrupt input), metrics emission and opt-out, the `FABLE_ORCH_HARNESS` stamp (present/absent across every hook script), the destructive-command guard (the 2026-09-09 incident line, every deny class including the nested and remote ones, the ask band, the allow band, the `updatedInput` rewrite and its idempotence) and the `rm` shim — driven exclusively through `SAFE_RM_DRYRUN=1`, so no test ever runs a real `rm`, Codex CLI transcript detection and both its usage-line shapes plus the byte-size fallback, injection, the mid-session profile-switch delta, cache cleanup, and teammate reaping (against a fake tmux/ps on PATH). A second layer pins the *content*: the cores stay under their size budget, both keep requiring the playbook skill, and the decisions that survived the diet (fresh-eyes on every close, the fork cap, the report cap, the batching rule) plus the Fable 5.1 additions (ledger assumptions, the whole-ledger recap, the decline false-positive check, the worker spec blocks), the effort-not-selectable-per-spawn correction, and the project-agent-roster rule, are asserted line by line.
 
 The hooks decide "chair or teammate?" by walking the real process tree, so the suite pins that ambient too — otherwise running the tests from inside a named teammate makes every chair-behaviour test fail for a reason unrelated to the code.
 

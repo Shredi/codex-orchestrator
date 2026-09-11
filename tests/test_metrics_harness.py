@@ -1,6 +1,6 @@
 """FABLE_ORCH_HARNESS: the metrics stamp an external adapter reads.
 
-`_metric()` is duplicated verbatim across all six hook scripts — no
+`_metric()` is duplicated verbatim across every hook script — no
 shared module, they run as standalone plugin hooks with no package to
 import from. That means a fix here can silently miss one of them, so
 this test is parametrized over every script rather than picking one as
@@ -23,6 +23,8 @@ GUARD_SCRIPTS = [
     "ledger_guard_stop.py",
     "inject_instructions.py",
     "ledger_guard_write.py",
+    "destructive_guard.py",
+    "destructive_guard_install.py",
 ]
 
 
