@@ -1,0 +1,231 @@
+#!/bin/sh
+# Layer B of the destructive-command guard: an `rm` that sees the
+# EXPANDED arguments.
+#
+# Installed by scripts/destructive_guard_install.py to
+# ~/.claude/guard/bin/rm and put FIRST on PATH, so every `rm` that is
+# resolved by name — from the agent's own command line, from a script,
+# from `xargs rm`, from `find -exec rm` — lands here first. The static
+# hook (scripts/destructive_guard.py) reads the command TEXT; this
+# reads what the shell actually built out of it, which is the only
+# place where `rm -rf -- "$1"/*` with an empty $1 is visibly `rm -rf /*`.
+#
+# REFUSE (exit 1, nothing deleted, one line appended to
+# ~/.claude/guard/denied.log):
+#   - no operands at all (every operand vanished in expansion)
+#   - an empty operand
+#   - an operand that canonicalises to `/`, a protected top-level
+#     directory, $HOME, or a single-segment /Users/<x>, /home/<x>,
+#     /Volumes/<x>, /mnt/<x>
+#   - any operand inside ~/.claude/guard, whatever the flags: that is
+#     this shim's own directory, and ~/.claude is an allowed root
+#   - a RECURSIVE delete of anything outside the allowed roots:
+#     $PWD, $TMPDIR, /tmp, /private/tmp, /var/folders, ~/.claude,
+#     ~/.workflow, ~/Documents/git
+# Non-recursive deletes of single files outside those roots pass: small
+# blast radius, and `sudo rm` never reaches here (Layer A denies it).
+# Deleting a SYMLINK by name (no trailing slash) is judged by where the
+# link itself lives — `rm -rf link` unlinks the link even when it points
+# at `/`; `rm -rf link/` walks into the target and is judged as that.
+#
+# SAFE_RM_DRYRUN=1 prints `ALLOW` or `REFUSE <reason>`, exits 0 and
+# never execs — this is how the test suite exercises the shim without
+# a real `rm` ever running. It is not a bypass: it deletes nothing.
+#
+# POSIX sh only (macOS /bin/sh, dash on Linux, Git Bash on Windows):
+# no arrays, no [[ ]], no `realpath` — canonicalisation is `cd -P` +
+# `pwd -P` in a subshell.
+set -u
+
+GUARD_DIR="${HOME:-/}/.claude/guard"
+LOG="$GUARD_DIR/denied.log"
+ARGV="$*"
+CWD=$(pwd -P 2>/dev/null) || CWD=${PWD:-/}
+HOME_DIR=${HOME:-}
+HOME_DIR=${HOME_DIR%/}
+
+log_refusal() {
+    [ -n "$HOME_DIR" ] || return 0
+    mkdir -p "$GUARD_DIR" 2>/dev/null || return 0
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || ts=?
+    printf '%s|%s|%s|rm %s\n' "$ts" "$CWD" "$1" "$ARGV" >>"$LOG" 2>/dev/null
+    return 0
+}
+
+refuse() {
+    if [ "${SAFE_RM_DRYRUN:-}" = "1" ]; then
+        printf 'REFUSE %s\n' "$1"
+        exit 0
+    fi
+    printf 'rm-guard: refused: %s: %s\n' "$1" "${2-}" >&2
+    printf 'rm-guard: nothing was deleted (see %s)\n' "$LOG" >&2
+    log_refusal "$1"
+    exit 1
+}
+
+# Canonical absolute path, without requiring the target to exist: an
+# existing directory resolves itself, anything else resolves its parent
+# and keeps the basename.
+# `canon <path> nofollow` stops at a symlink: `rm -rf link` (no trailing
+# slash) removes the LINK, not what it points at, so the path that must
+# clear the protected/allowed-root checks is the link's own.
+canon() (
+    p=$1
+    case $p in
+        /*) ;;
+        *) p=$CWD/$p ;;
+    esac
+    if [ "${2-}" != nofollow ] && [ -d "$p" ]; then
+        cd -P "$p" 2>/dev/null && pwd -P && exit 0
+        printf '%s\n' "$p"
+        exit 0
+    fi
+    d=$(dirname "$p")
+    b=$(basename "$p")
+    if cd -P "$d" 2>/dev/null; then
+        dd=$(pwd -P)
+        case $dd in
+            /) printf '/%s\n' "$b" ;;
+            *) printf '%s/%s\n' "$dd" "$b" ;;
+        esac
+    else
+        printf '%s\n' "$p"
+    fi
+)
+
+is_protected() {
+    # distinct variable names: POSIX sh functions share one scope, and
+    # inside_allowed() calls this one mid-loop
+    ip_p=${1%/}
+    [ -n "$ip_p" ] || ip_p=/
+    case $ip_p in
+        /) return 0 ;;
+        /Applications|/Library|/System|/Users|/Volumes|/opt|/usr|/private) return 0 ;;
+        /etc|/var|/bin|/sbin|/home|/mnt|/srv|/dev|/boot|/root) return 0 ;;
+        /Users/*/*|/home/*/*|/Volumes/*/*|/mnt/*/*) ;;
+        /Users/*|/home/*|/Volumes/*|/mnt/*) return 0 ;;
+    esac
+    [ -n "$HOME_DIR" ] && [ "$ip_p" = "$HOME_DIR" ] && return 0
+    return 1
+}
+
+inside_allowed() {
+    ia_p=$1
+    for ia_root in "$CWD" "${TMPDIR:-}" /tmp /private/tmp /var/folders \
+                "$HOME_DIR/.claude" "$HOME_DIR/.workflow" "$HOME_DIR/Documents/git"; do
+        ia_root=${ia_root%/}
+        [ -n "$ia_root" ] || continue
+        case $ia_root in /*) ;; *) continue ;; esac
+        if is_protected "$ia_root"; then continue; fi
+        case $ia_p in "$ia_root"/*) return 0 ;; esac
+        # Operands are canonicalised, so the roots must be too, or a root
+        # reached through a symlink never matches its own contents: on
+        # macOS $TMPDIR is /var/folders/… and /var is a link to /private/var,
+        # so every operand under it canonicalises to /private/var/folders/….
+        [ -d "$ia_root" ] || continue
+        ia_can=$(canon "$ia_root")
+        [ "$ia_can" = "$ia_root" ] && continue
+        if is_protected "$ia_can"; then continue; fi
+        case $ia_p in "$ia_can"/*) return 0 ;; esac
+    done
+    return 1
+}
+
+real_rm() (
+    if [ -x /bin/rm ]; then
+        printf '/bin/rm\n'
+        exit 0
+    fi
+    self=$0
+    case $self in */*) ;; *) self=./$self ;; esac
+    selfdir=$(cd -P "$(dirname "$self")" 2>/dev/null && pwd -P) || selfdir=
+    IFS=:
+    for d in ${PATH:-/bin:/usr/bin}; do
+        [ -n "$d" ] || d=.
+        [ -x "$d/rm" ] || continue
+        here=$(cd -P "$d" 2>/dev/null && pwd -P) || continue
+        [ "$here" = "$selfdir" ] && continue
+        printf '%s/rm\n' "$here"
+        exit 0
+    done
+    exit 1
+)
+
+# --- pass 1: flags ---------------------------------------------------------
+recursive=0
+nops=0
+helponly=0
+end_opts=0
+for arg in "$@"; do
+    if [ "$end_opts" -eq 0 ]; then
+        case $arg in
+            --) end_opts=1; continue ;;
+            --help|--version) helponly=1; continue ;;
+            --recursive) recursive=1; continue ;;
+            --*) continue ;;
+            -?*)
+                case $arg in *r*|*R*) recursive=1 ;; esac
+                continue
+                ;;
+        esac
+    fi
+    nops=$((nops + 1))
+done
+
+if [ "$nops" -eq 0 ]; then
+    if [ "$helponly" -eq 1 ]; then
+        if [ "${SAFE_RM_DRYRUN:-}" = "1" ]; then printf 'ALLOW\n'; exit 0; fi
+        RM=$(real_rm) || { printf 'rm-guard: no real rm found\n' >&2; exit 1; }
+        exec "$RM" "$@"
+    fi
+    refuse "no operands (an expansion produced nothing)" ""
+fi
+
+# --- pass 2: operands ------------------------------------------------------
+# The guard's own directory, canonicalised the same way operands are, so
+# `rm -rf ~/.claude/guard/bin` cannot delete Layer B — ~/.claude is an
+# allowed root, which is exactly why this needs its own check.
+GUARD_CANON=$GUARD_DIR
+if [ -d "$GUARD_DIR" ]; then
+    GUARD_CANON=$(canon "$GUARD_DIR")
+fi
+
+end_opts=0
+for arg in "$@"; do
+    if [ "$end_opts" -eq 0 ]; then
+        case $arg in
+            --) end_opts=1; continue ;;
+            --*) continue ;;
+            -?*) continue ;;
+        esac
+    fi
+    if [ -z "$arg" ]; then
+        refuse "empty operand" "''"
+    fi
+    # A symlink named without a trailing slash: rm unlinks the link, so
+    # judge the link's own location, not the tree it points into.
+    nofollow=
+    case $arg in
+        */) ;;
+        *) [ -L "$arg" ] && nofollow=nofollow ;;
+    esac
+    target=$(canon "$arg" $nofollow)
+    case $target in
+        "$GUARD_DIR"|"$GUARD_DIR"/*|"$GUARD_CANON"|"$GUARD_CANON"/*)
+            refuse "guard-self" "$target" ;;
+    esac
+    if is_protected "$target"; then
+        refuse "protected path" "$target"
+    fi
+    if [ "$recursive" -eq 1 ] && ! inside_allowed "$target"; then
+        refuse "recursive delete outside allowed roots" "$target"
+    fi
+done
+
+if [ "${SAFE_RM_DRYRUN:-}" = "1" ]; then
+    printf 'ALLOW\n'
+    exit 0
+fi
+
+RM=$(real_rm) || { printf 'rm-guard: no real rm found on PATH\n' >&2; exit 1; }
+exec "$RM" "$@"

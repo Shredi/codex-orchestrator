@@ -68,7 +68,9 @@ def test_playbook_skill_exists_and_stays_bounded():
     path = REPO.joinpath(*PLAYBOOK)
     assert path.is_file(), f"missing playbook skill: {path}"
     text = path.read_text(encoding="utf-8")
-    assert len(text) < 5000, f"SKILL.md is {len(text)} chars — over the 5k budget"
+    # 5.25k since the destructive-command SAFETY sentence landed in the
+    # verification paragraph; still a budget, not a dumping ground.
+    assert len(text) < 5250, f"SKILL.md is {len(text)} chars — over budget"
     assert "name: playbook" in text  # the namespaced literal below depends on it
     # The paste-ready blocks sit beside SKILL.md and are read only when a
     # spawn needs them — but without a budget of their own the 5k pin

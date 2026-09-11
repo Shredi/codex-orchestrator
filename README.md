@@ -32,7 +32,7 @@ codex-orchestrator/          this repo — vendors core/ via git subtree,
 
 - `.codex-plugin/plugin.json` — plugin manifest (see "Plugin manifest" below).
 - `core/` — `git subtree` vendor of `fable5-opus5-orchestrator` at tag
-  `core-v2` (see `core/VERSION`). `git subtree add` pulls the **whole** source
+  `core-v3` (see `core/VERSION`). `git subtree add` pulls the **whole** source
   repo tree into `core/`, not just `scripts/instructions/skills/playbook/tests`
   — subtree only vendors at repo granularity. The extra files (this repo's
   own `.github/`, `.claude-plugin/`, top-level `README.md`/`LICENSE` duplicated
@@ -47,7 +47,9 @@ codex-orchestrator/          this repo — vendors core/ via git subtree,
 - `profiles/{openai,openrouter-free,anthropic-api}.toml` — tier → model map.
 - `bin/codex-sync` — generates `~/.codex/agents/*.toml`, `<repo>/.codex/agents/*.toml`
   from `<repo>/.claude/agents/*.md`, an `AGENTS.md` stub, the `~/.agents/skills`
-  symlink farm, and an `[mcp_servers]` snippet from the Claude MCP config.
+  symlink farm, an `[mcp_servers]` snippet from the Claude MCP config, and the
+  destructive guard's Layer B: `~/.claude/guard/bin/rm` plus the
+  `[shell_environment_policy]` PATH entry that puts it in front of `/bin/rm`.
 - `tests/` — `codex-sync` unit tests (frontmatter translation, idempotency,
   dry-run, AGENTS.md never-overwritten, secret redaction), profile schema
   tests, and the adapter tests (`test_adapter.py` + `fixtures/`).
@@ -79,6 +81,7 @@ Codex hook stdin JSON
 | SessionStart | `inject_instructions` | `additionalContext` (`additionalContextLimit: 20000`) |
 | UserPromptSubmit | `cold_cache_guard` | `decision: block` (+ 3-min re-send ack) |
 | PreToolUse (`collaborationspawn_agent`) | `ledger_guard_spawn` | `permissionDecision: deny` |
+| PreToolUse (`Bash`) | `destructive_guard` | `permissionDecision: deny` (ask band included, see below) |
 | PreToolUse (`apply_patch`, `Bash`) | `ledger_guard_write` | `permissionDecision: deny` |
 | PostToolUse (`apply_patch`, `Bash`) | `ledger_bind` | none (session↔ledger binding) |
 | Stop | `ledger_guard_stop` | `decision: block`, once per session |
@@ -160,6 +163,23 @@ still behaves, an under-matching one is the risk to watch.
   the core's reason, explaining what "use Edit" means in a harness with
   no Edit tool (appended, never a rewrite of core prose — a substring
   patch would rot on the next `pull-core`).
+- **The destructive guard's ASK band is a DENY here.** Codex parses
+  `permissionDecision: "ask"` but does not honour it: "Codex marks the
+  hook run as failed, reports the error, and continues the tool call"
+  (hooks docs, read 2026-09-11). Continuing is the one outcome an
+  unapproved recursive `rm` must not get, so the adapter converts the
+  ask to a deny and appends `CODEX_ASK_NOTE` — what the approval prompt
+  would have offered — to the core's own reason.
+- **The guard's `updatedInput` PATH rewrite is dropped.** Codex accepts
+  `updatedInput` only next to `permissionDecision: "allow"`, and emitting
+  that allow would hand every rm-bearing command a blanket approval it
+  never had. Layer B reaches Codex a different way: `bin/codex-sync`
+  installs `core/guard/rm` to `~/.claude/guard/bin/rm` (0755, atomic) and
+  merges `[shell_environment_policy] set = { PATH = "<guard dir>:…" }`
+  into `~/.codex/config.toml`. `set` is the only documented knob there and
+  has no prepend form, so the value is a literal joined at sync time and
+  re-prepended (never duplicated) on every later run; other keys in that
+  section, and everything else in the file, are left untouched.
 - `systemMessage` (a Claude Code extra with no documented Codex
   counterpart) is dropped; its content is already in `additionalContext`
   on the only path that emits it.

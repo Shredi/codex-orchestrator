@@ -56,3 +56,14 @@ structure and other difficult decisions, and otherwise using the
 reasoning space to reason and the output space to write an output.
 Usually it is not needed to draft an output multiple times.
 ```
+
+## SAFETY — add to any spec touching rm/truncate/git clean/dd/docker rm
+
+```text
+Never execute a destructive command (`rm`, `git clean`, `dd`,
+`truncate`, `shred`, `docker rm`) with a test, empty or variable
+operand: probe it with `echo` or a dry-run flag first, put `${var:?}`
+in front of any path-bearing `rm -rf`, and delete only paths this task
+created. A guard hook denies these shapes — that is a backstop, not a
+licence to try them.
+```

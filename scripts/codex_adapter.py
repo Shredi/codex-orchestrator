@@ -17,7 +17,10 @@ One process per hook fire. It does three things and nothing else:
   3. TRANSLATE the guard's stdout/exit code back into Codex's hook
      output schema (PreToolUse `permissionDecision: deny`,
      UserPromptSubmit / Stop `decision: block`, SessionStart
-     `additionalContext`).
+     `additionalContext`). Two Claude-only shapes have no Codex
+     counterpart and are converted rather than passed through:
+     `permissionDecision: "ask"` becomes a DENY, and `updatedInput` is
+     dropped — see `to_codex` for the documented reasons.
 
 Session marker paths (`$TMPDIR/fable-orch-*-<sid>.json`) and the metrics
 log (`~/.claude/fable-orch/metrics.jsonl`) are deliberately IDENTICAL to
@@ -159,6 +162,16 @@ GUARDS = {
         "event": "PostToolUse",
         "tools": ("Write", "Edit", "MultiEdit", "Bash"), "timeout": 10,
     },
+    # Machine safety rather than workflow: the static half (Layer A) of
+    # the destructive-command guard that arrived with core-v3. Layer B —
+    # the `rm` shim that sees the EXPANDED argv — cannot be delivered
+    # through a hook here (Codex takes `updatedInput` only alongside
+    # `permissionDecision: "allow"`, see `to_codex`); `bin/codex-sync`
+    # installs it and puts it on PATH via `[shell_environment_policy]`.
+    "destructive_guard": {
+        "script": "destructive_guard.py",
+        "event": "PreToolUse", "tools": ("Bash",), "timeout": 10,
+    },
     "ledger_guard_stop": {
         "script": "ledger_guard_stop.py",
         "event": "Stop", "tools": None, "timeout": 10,
@@ -267,6 +280,18 @@ CODEX_WRITE_NOTE = (
     "./.workflow/LEDGER-<topic>.md. Routing the same write through the "
     "shell is guarded too — do not try it. The guard only ever fires on "
     "live .workflow/LEDGER*.md files."
+)
+
+# Appended when an ASK is downgraded to a DENY — see `to_codex`. Codex
+# has no ask band, so the reason has to carry what the approval prompt
+# would otherwise have carried: what to do instead.
+CODEX_ASK_NOTE = (
+    " [codex-orchestrator] The core guard asked for approval; Codex hooks "
+    "have no ask band (`permissionDecision: \"ask\"` is parsed but not "
+    "honoured — the tool call would simply proceed), so it is a DENY here. "
+    "Re-issue it inside an allowed root (cwd, $TMPDIR, /tmp, ~/.claude, "
+    "~/.workflow, ~/Documents/git), name the paths literally, or run it "
+    "yourself outside the harness."
 )
 
 HARNESS = (os.environ.get("CODEX_ADAPTER_HARNESS") or "codex").strip() or "codex"
@@ -629,7 +654,29 @@ def to_codex(result, codex_event, guard, codex_tool=None):
             reason = hso.get("permissionDecisionReason")
             if isinstance(reason, str):
                 hso["permissionDecisionReason"] = reason + CODEX_WRITE_NOTE
-        out["hookSpecificOutput"] = hso
+        # Codex hooks docs (read 2026-09-11): «permissionDecision: "ask" …
+        # [is] parsed but not supported yet. Codex marks the hook run as
+        # failed, reports the error, and continues the tool call.» For the
+        # destructive guard's ASK band — a recursive rm on a literal path
+        # outside the allowed roots — "continues the tool call" is the one
+        # outcome that must not happen, so an ask becomes a DENY carrying
+        # the core's own reason plus CODEX_ASK_NOTE. Stricter than Claude
+        # Code on purpose; the alternative is a silent allow.
+        if hso.get("permissionDecision") == "ask":
+            hso["permissionDecision"] = "deny"
+            reason = hso.get("permissionDecisionReason")
+            if isinstance(reason, str):
+                hso["permissionDecisionReason"] = reason + CODEX_ASK_NOTE
+        # Same docs: «Return updatedInput only with permissionDecision:
+        # "allow"; other updatedInput shapes are reported as errors.» The
+        # core's PATH-prefix rewrite arrives with no decision at all, and
+        # turning it into an `allow` would hand every rm-bearing command a
+        # blanket approval it never had. Codex gets Layer B from
+        # `[shell_environment_policy]` instead, so the rewrite is dropped.
+        hso.pop("updatedInput", None)
+        # A bare hookEventName is not a decision — say nothing at all.
+        if any(k in hso for k in ("permissionDecision", "additionalContext")):
+            out["hookSpecificOutput"] = hso
 
     if result.get("decision") == "block":
         out["decision"] = "block"
