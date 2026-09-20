@@ -20,12 +20,12 @@ BULWARK_AGENTS = Path("/Users/marc/Documents/git/bulwark/.claude/agents")
 
 @pytest.mark.skipif(not HUB_AGENTS.is_dir(), reason="hub repo not present in this checkout")
 def test_parses_hub_agent_without_mcpservers(codex_sync):
-    text = (HUB_AGENTS / "ha-collector.md").read_text(encoding="utf-8")
+    text = (HUB_AGENTS / "harness-engineer.md").read_text(encoding="utf-8")
     fields, body = codex_sync.parse_frontmatter(text)
-    assert fields["name"] == "ha-collector"
-    assert fields["model"] == "sonnet"
+    assert fields["name"] == "harness-engineer"
+    assert fields["model"] == "opus"
     assert "mcpServers" not in fields
-    assert body.startswith("You are the Home Assistant")
+    assert body.startswith("You are the harness engineer")
 
 
 @pytest.mark.skipif(not HUB_AGENTS.is_dir(), reason="hub repo not present in this checkout")
@@ -39,6 +39,49 @@ def test_parses_hub_agent_folded_multiline_description_and_mcpservers(codex_sync
     assert "\n" not in fields["description"]
     assert fields["mcpServers"]["blender"]["command"] == "uvx"
     assert fields["mcpServers"]["blender"]["env"]["DISABLE_TELEMETRY"] == "true"
+
+
+@pytest.mark.skipif(not HUB_AGENTS.is_dir(), reason="hub repo not present in this checkout")
+def test_parses_hub_agent_tools_block_list(codex_sync):
+    """`tools:` as an indented YAML list (server19-worker/mgmt01-worker)."""
+    text = (HUB_AGENTS / "server19-worker.md").read_text(encoding="utf-8")
+    fields, _ = codex_sync.parse_frontmatter(text)
+    assert fields["tools"] == ["Bash", "Read"]
+    assert codex_sync.sandbox_mode_for(fields["tools"]) == "workspace-write"
+
+
+def test_parses_mcpservers_in_mapping_form(codex_sync):
+    """The mapping form must normalise to the same {name: cfg} shape as the
+    `- name:` sequence form the hub agent files use."""
+    text = (
+        "---\n"
+        "name: mapping-form\n"
+        "model: sonnet\n"
+        "mcpServers:\n"
+        "  blender:\n"
+        "    type: stdio\n"
+        "    command: uvx\n"
+        '    args: ["blender-mcp"]\n'
+        '    env: {"DISABLE_TELEMETRY": "true"}\n'
+        "---\n\nbody\n"
+    )
+    fields, _ = codex_sync.parse_frontmatter(text)
+    assert fields["mcpServers"]["blender"]["command"] == "uvx"
+    assert fields["mcpServers"]["blender"]["args"] == ["blender-mcp"]
+    assert fields["mcpServers"]["blender"]["env"]["DISABLE_TELEMETRY"] == "true"
+
+
+@pytest.mark.skipif(not HUB_AGENTS.is_dir(), reason="hub repo not present in this checkout")
+def test_project_agent_toml_carries_mcp_servers(codex_sync):
+    """Regression: the sequence form used to parse into a bare string, so
+    render_project_agent silently emitted no [mcp_servers.*] table at all."""
+    text = (HUB_AGENTS / "unifi.md").read_text(encoding="utf-8")
+    fields, body = codex_sync.parse_frontmatter(text)
+    profile_data = codex_sync.load_profile("openai")
+    rendered = codex_sync.render_project_agent("unifi", fields, body, profile_data)
+    parsed = tomllib.loads(rendered)
+    assert parsed["mcp_servers"]["unifi-network"]["command"] == "bash"
+    assert parsed["mcp_servers"]["unifi-network"]["args"][0] == "-lc"
 
 
 @pytest.mark.skipif(not BULWARK_AGENTS.is_dir(), reason="bulwark repo not present in this checkout")

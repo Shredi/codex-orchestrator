@@ -188,15 +188,69 @@ def render_tier_agent(profile: str, tier: str, profile_data: dict) -> str:
 # --------------------------------------------------------------------------
 # .claude/agents/*.md frontmatter parsing (no PyYAML — the frontmatter used
 # across this codebase is a small, regular subset: bare scalars, folded
-# double-quoted multi-line strings, and one-line JSON objects for
-# mcpServers). See tests/test_codex_sync.py for the real-file fixtures this
-# is validated against (hub + bulwark agent files).
+# double-quoted multi-line strings, inline JSON objects/arrays, and indented
+# YAML blocks — a sequence of scalars (`tools:`) or a sequence of one-key
+# mappings (`mcpServers:`, the form every hub agent file uses). See
+# tests/test_codex_sync.py for the real-file fixtures this is validated
+# against (hub + bulwark agent files).
 # --------------------------------------------------------------------------
 
 _KEY_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):[ \t]?(.*)$")
+# Keys *inside* a block (MCP server names, config keys) may contain hyphens
+# and dots — `home-assistant`, `unifi-network`. The top-level key regex stays
+# strict so an indented folded-string line can never be mistaken for a key.
+_BLOCK_KEY_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_.-]*):[ \t]?(.*)$")
+
+
+def _indent_of(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _group_block(lines: list[str]) -> list[list[str]]:
+    """Split indented block lines into entries at the block's own indent."""
+    base = min(_indent_of(line) for line in lines)
+    entries: list[list[str]] = []
+    for line in lines:
+        if not entries or _indent_of(line) == base:
+            entries.append([line])
+        else:
+            entries[-1].append(line)
+    return entries
+
+
+def _parse_block(lines: list[str]):
+    """An indented YAML block: a `- ` sequence, or a nested mapping."""
+    entries = _group_block(lines)
+    if all(entry[0].lstrip().startswith("-") for entry in entries):
+        return [_parse_sequence_entry(entry) for entry in entries]
+    return _parse_mapping(entries)
+
+
+def _parse_sequence_entry(entry: list[str]):
+    head = entry[0].lstrip()[1:].lstrip()  # drop the "- " marker
+    if _BLOCK_KEY_RE.match(head) is None:
+        # plain scalar item, e.g. `- Bash` under `tools:`
+        return _coerce_value([head] + entry[1:])
+    # `- name:` plus an indented mapping underneath -> a one-key mapping
+    indent = " " * (_indent_of(entry[0]) + 2)
+    return _parse_mapping(_group_block([indent + head] + entry[1:]))
+
+
+def _parse_mapping(entries: list[list[str]]) -> dict:
+    out: dict = {}
+    for entry in entries:
+        m = _BLOCK_KEY_RE.match(entry[0].strip())
+        if m is None:
+            continue
+        out[m.group(1)] = _coerce_value([m.group(2)] + entry[1:])
+    return out
 
 
 def _coerce_value(buf: list[str]):
+    """buf[0] is the value on the `key:` line, buf[1:] the raw lines below it."""
+    rest = [line for line in buf[1:] if line.strip()]
+    if not buf[0].strip():
+        return _parse_block(rest) if rest else ""
     raw = " ".join(s.strip() for s in buf if s.strip() != "").strip()
     if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
         # YAML double-quoted scalar: unescape \" and \\ (the two escapes
@@ -206,6 +260,21 @@ def _coerce_value(buf: list[str]):
     if raw.startswith("{") or raw.startswith("["):
         return json.loads(raw)
     return raw
+
+
+def _normalize_mcp_servers(value):
+    """`mcpServers:` reaches us either as a YAML sequence of one-key mappings
+    (`- blender:` + indented config — what every .claude/agents/*.md file
+    uses) or as a mapping / inline JSON object. Both normalise to the
+    {server_name: {command, args, env, ...}} shape render_project_agent and
+    the tests expect."""
+    if isinstance(value, list):
+        merged: dict = {}
+        for item in value:
+            if isinstance(item, dict):
+                merged.update(item)
+        return merged
+    return value
 
 
 def parse_frontmatter(text: str) -> tuple[dict, str]:
@@ -234,8 +303,10 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
             key = m.group(1)
             buf = [m.group(2)]
         elif key is not None:
-            buf.append(line.strip())
+            buf.append(line)
     flush()
+    if "mcpServers" in fields:
+        fields["mcpServers"] = _normalize_mcp_servers(fields["mcpServers"])
     return fields, body
 
 
