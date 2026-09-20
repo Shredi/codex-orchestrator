@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from conftest import run_hook
+from conftest import POSIX, run_hook
 
 SCRIPT = "destructive_guard.py"
 CWD = "/Users/tester/Documents/git/project"
@@ -47,6 +47,41 @@ def test_denies_the_2026_09_09_incident_line():
     assert "DESTRUCTIVE_GUARD=0" in reason
     # A denied command is never rewritten — there is nothing to run.
     assert "updatedInput" not in out
+
+
+# --- DENY: Windows drive paths (MGMT01 runs the hook under Git Bash) --------
+
+WIN_CWD = "C:/claude"
+
+
+@pytest.mark.parametrize("command", [
+    "rm -rf C:/",
+    "rm -rf C:/*",
+    "rm -rf C:/Users",
+    "rm -rf C:/Users/marc",
+    "rm -rf C:/Users/marc/*",
+    "rm -rf C:/Windows",
+    'rm -rf "C:/Program Files"',
+    "rm -rf /c/",
+    "rm -rf /c/Users/marc",
+    "rm -rf /c/Users/marc/*",
+])
+def test_denies_windows_protected_targets(command):
+    assert decide(command, cwd=WIN_CWD)[0] == "deny"
+
+
+def test_allows_drive_path_inside_cwd():
+    # A drive path is ABSOLUTE: inside the project root it is ordinary work,
+    # not a relative operand glued under cwd.
+    assert decide("rm -rf C:/claude/build", cwd=WIN_CWD)[0] == "allow"
+    assert decide("rm -rf /c/claude/build", cwd=WIN_CWD)[0] == "allow"
+
+
+@POSIX  # HOME= pins the home; ntpath.expanduser never reads it
+def test_denies_home_glob_when_home_is_a_drive_path():
+    env = {"HOME": "C:\\Users\\marc"}
+    assert decide("rm -rf ~/*", cwd=WIN_CWD, env_extra=env)[0] == "deny"
+    assert decide("rm -rf ~/Documents", cwd=WIN_CWD, env_extra=env)[0] == "ask"
 
 
 # --- DENY: operands that are unknown at approval time -----------------------

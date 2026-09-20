@@ -8,7 +8,7 @@ import json
 import os
 import time
 
-from conftest import REPO, run_hook, write_marker
+from conftest import POSIX, REPO, run_hook, write_marker
 
 SCRIPT = "ledger_guard_write.py"
 
@@ -199,6 +199,7 @@ def test_non_dict_marker_json_still_denies(repo_dir, tmp_path):
 
 # --- metrics -----------------------------------------------------------------
 
+@POSIX  # metrics land under expanduser("~"); HOME= only redirects it on posixpath
 def test_deny_emits_write_deny_metric(repo_dir, tmp_path):
     home = tmp_path / "home"
     home.mkdir()

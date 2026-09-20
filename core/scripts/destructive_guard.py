@@ -321,8 +321,34 @@ def _is_recursive(tok):
 
 # --- path reasoning --------------------------------------------------------
 
+# Windows forms of an absolute path: `C:/...` (native, backslashes already
+# folded) and `/c/...` (Git Bash / MSYS, what `~` expands to on MGMT01).
+# posixpath.isabs() knows neither, so without this a drive path would be
+# joined under cwd and a `rm -rf ~/*` under Git Bash lands "inside" the
+# project root and is waved through.
+DRIVE_RE = re.compile(r"^[A-Za-z]:(/|$)")
+MSYS_DRIVE_RE = re.compile(r"^/([A-Za-z])(/|$)")
+# Top-level Windows directories nobody deletes as a task step (compared
+# case-folded, one level below the drive root).
+PROTECTED_TOP_NT = frozenset([
+    "users", "windows", "program files", "program files (x86)", "programdata",
+])
+
+
 def _home():
     return os.path.expanduser("~").replace("\\", "/").rstrip("/")
+
+
+def _fold_drive(p):
+    """`/c/Users/x` -> `C:/Users/x`; other paths unchanged."""
+    m = MSYS_DRIVE_RE.match(p)
+    if m:
+        return m.group(1).upper() + ":" + p[2:]
+    return p
+
+
+def _is_abs(p):
+    return posixpath.isabs(p) or bool(DRIVE_RE.match(p))
 
 
 def _abspath(op, cwd):
@@ -332,21 +358,30 @@ def _abspath(op, cwd):
     p = op.replace("\\", "/")
     if p.startswith("~"):
         p = _home() + p[1:]
-    if not posixpath.isabs(p):
-        p = posixpath.join((cwd or "").replace("\\", "/"), p)
+    p = _fold_drive(p)
+    if not _is_abs(p):
+        p = posixpath.join(_fold_drive((cwd or "").replace("\\", "/")), p)
     return posixpath.normpath(p)
 
 
 def _is_protected(path):
-    p = (path or "").rstrip("/") or "/"
+    p = _fold_drive((path or "").replace("\\", "/")).rstrip("/") or "/"
     if p == "/" or p in PROTECTED_TOP:
         return True
-    home = _home()
+    home = _fold_drive(_home())
     if home and p == home:
         return True
     parts = p.split("/")
     if len(parts) == 3 and parts[0] == "" and parts[1] in PROTECTED_PARENTS:
         return True
+    if DRIVE_RE.match(p):
+        # `C:` (drive root), `C:/Users`, `C:/Windows`, ..., `C:/Users/<name>`
+        if len(parts) == 1:
+            return True
+        if len(parts) == 2 and parts[1].lower() in PROTECTED_TOP_NT:
+            return True
+        if len(parts) == 3 and parts[1].lower() == "users":
+            return True
     return False
 
 

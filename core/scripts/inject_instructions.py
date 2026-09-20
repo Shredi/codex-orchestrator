@@ -142,7 +142,7 @@ def _configured_model():
         os.path.expanduser("~"), ".claude")
     for name in ("settings.local.json", "settings.json"):
         try:
-            with open(os.path.join(base, name), encoding="utf-8") as f:
+            with open(os.path.join(base, name), encoding="utf-8-sig") as f:
                 m = json.load(f).get("model")
         except Exception:
             continue
