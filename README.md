@@ -50,6 +50,13 @@ codex-orchestrator/          this repo — vendors core/ via git subtree,
   symlink farm, an `[mcp_servers]` snippet from the Claude MCP config, and the
   destructive guard's Layer B: `~/.claude/guard/bin/rm` plus the
   `[shell_environment_policy]` PATH entry that puts it in front of `/bin/rm`.
+- `bin/ledger` — sh wrapper (python3 → python fallback) around the vendored
+  `core/scripts/ledger.py` (core-v7), mirroring the Claude plugin's
+  `bin/ledger`. Codex does **not** put a plugin's `bin/` on PATH (plugin.json
+  has no such field), so the model never sees `ledger` as a command: the
+  adapter appends the absolute `python3 "<plugin>/core/scripts/ledger.py" …`
+  form to the SessionStart instructions (`ledger_note()`). The wrapper is for
+  human shells or a PATH entry you add yourself.
 - `tests/` — `codex-sync` unit tests (frontmatter translation, idempotency,
   dry-run, AGENTS.md never-overwritten, secret redaction), profile schema
   tests, and the adapter tests (`test_adapter.py` + `fixtures/`).

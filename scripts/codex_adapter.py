@@ -305,6 +305,26 @@ CORE_ROOT = os.path.join(os.path.dirname(ADAPTER_DIR), "core")
 CORE_SCRIPTS = os.path.join(CORE_ROOT, "scripts")
 
 
+def ledger_note():
+    """Appended to the SessionStart instructions under Codex (core-v7+).
+
+    The core's Rule 1 says `ledger mark N` / `ledger defer` / `ledger add`:
+    Claude Code puts the plugin's bin/ on PATH, Codex does not (its
+    plugin.json has no bin field), so the bare `ledger` would be "command
+    not found". The absolute path is resolved per hook run, so it follows
+    whichever plugin cache copy is live. Additive, like CODEX_WRITE_NOTE —
+    never a rewrite of core prose.
+    """
+    py = "python" if os.name == "nt" else "python3"
+    script = os.path.join(CORE_SCRIPTS, "ledger.py")
+    return (
+        "\n\n[codex-orchestrator] `ledger` is not on PATH under Codex. "
+        "Wherever these rules say `ledger <cmd> …`, run "
+        f"`{py} \"{script}\" <cmd> …` instead — same subcommands "
+        "(status, mark, defer, add, note; `-f PATH` picks the ledger)."
+    )
+
+
 # --- helpers ----------------------------------------------------------
 
 def canonical_tool(name):
@@ -654,6 +674,12 @@ def to_codex(result, codex_event, guard, codex_tool=None):
             reason = hso.get("permissionDecisionReason")
             if isinstance(reason, str):
                 hso["permissionDecisionReason"] = reason + CODEX_WRITE_NOTE
+        if guard == "inject_instructions":
+            ctx = hso.get("additionalContext")
+            if (isinstance(ctx, str) and ctx
+                    and os.path.isfile(os.path.join(CORE_SCRIPTS,
+                                                    "ledger.py"))):
+                hso["additionalContext"] = ctx + ledger_note()
         # Codex hooks docs (read 2026-09-11): «permissionDecision: "ask" …
         # [is] parsed but not supported yet. Codex marks the hook run as
         # failed, reports the error, and continues the tool call.» For the

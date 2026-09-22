@@ -570,6 +570,34 @@ def test_user_pin_beats_the_model_map(sandbox):
     assert "(FABLE profile)" in out["hookSpecificOutput"]["additionalContext"]
 
 
+def test_session_start_tells_codex_how_to_run_ledger(sandbox):
+    """core-v7 Rule 1 says `ledger mark N`; Codex has no plugin bin/ on
+    PATH, so the adapter appends the absolute ledger.py invocation."""
+    _, repo, tmp = sandbox
+    payload = fixture("session_start", cwd=str(repo), model="gpt-6-astra")
+    _, out, _ = run_adapter("inject_instructions", payload, tmp)
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert "`ledger mark N`" in ctx                  # core prose untouched
+    script = REPO / "core" / "scripts" / "ledger.py"
+    assert script.is_file()
+    assert f'"{script}"' in ctx
+    assert ctx.rstrip().endswith("picks the ledger).")
+    assert len(ctx) < 20000   # hooks.json additionalContextLimit
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX sh wrapper")
+def test_bin_ledger_wrapper_runs_vendored_core(tmp_path):
+    wf = tmp_path / ".workflow"
+    wf.mkdir()
+    ledger = wf / "LEDGER-t.md"
+    ledger.write_text("# t\n\n- [ ] 1. one\n- [ ] V. verify\n")
+    proc = subprocess.run([str(REPO / "bin" / "ledger"), "mark", "1"],
+                          cwd=tmp_path, capture_output=True, text=True,
+                          timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    assert "- [x] 1. one" in ledger.read_text()
+
+
 # --- UserPromptSubmit -------------------------------------------------
 
 def test_cold_cache_guard_passes_slash_commands(sandbox):

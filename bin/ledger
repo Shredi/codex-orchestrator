@@ -1,0 +1,13 @@
+#!/bin/sh
+# `ledger` helper for the Codex side: same wrapper as the Claude plugin's
+# bin/ledger, pointed at the vendored core. Codex does NOT put a plugin's
+# bin/ on PATH (plugin.json has no such field), so the model is told the
+# absolute `python3 …/core/scripts/ledger.py` form at SessionStart (see
+# CODEX_LEDGER_NOTE in scripts/codex_adapter.py); this wrapper is for a
+# human shell or a PATH entry you add yourself.
+# Git Bash on Windows often has only `python`, so fall back to it.
+script="$(dirname "$0")/../core/scripts/ledger.py"
+if command -v python3 >/dev/null 2>&1; then
+    exec python3 "$script" "$@"
+fi
+exec python "$script" "$@"
