@@ -1,5 +1,7 @@
 """scripts/ledger.py: the `ledger` helper that ticks, defers, adds and
 annotates ledger items in place instead of ad-hoc heredoc edits."""
+import json
+import os
 import subprocess
 import sys
 
@@ -18,10 +20,14 @@ BODY = (
 )
 
 
-def ledger(cwd, *args):
+def ledger(cwd, *args, env=None):
+    # Never inherit the live session's id or LEDGER from the test runner.
+    base = {k: v for k, v in os.environ.items()
+            if k not in ("CLAUDE_CODE_SESSION_ID", "LEDGER")}
     return subprocess.run(
         [sys.executable, str(SCRIPTS / "ledger.py"), *args],
         cwd=str(cwd), capture_output=True, text=True, timeout=30,
+        env={**base, **(env or {})},
     )
 
 
@@ -136,3 +142,39 @@ def test_crlf_preserved(tmp_path):
     assert "\n" not in out.replace("\r\n", "")
     assert "- [x] 1. first\r\n" in out and "- [ ] 5. crlf item\r\n" in out
     assert out.endswith("passed\r\n")
+
+
+def test_session_bound_ledger_wins_over_ambiguity(tmp_path):
+    a = make(tmp_path, name="LEDGER-a.md")
+    make(tmp_path, name="LEDGER-b.md")
+    tmp = tmp_path / "tmp"
+    tmp.mkdir()
+    (tmp / "fable-orch-model-sid-1.json").write_text(
+        json.dumps({"ledger": str(a.resolve())}), encoding="utf-8")
+    env = {"CLAUDE_CODE_SESSION_ID": "sid-1", "TMPDIR": str(tmp),
+           "TEMP": str(tmp), "TMP": str(tmp)}
+    r = ledger(tmp_path, "status", env=env)
+    assert r.returncode == 0, r.stderr
+    assert "LEDGER-a.md" in r.stdout
+    # a bound ledger that was archived away is not live -> falls through
+    a.rename(a.with_name("LEDGER-a-archive.md"))
+    r = ledger(tmp_path, "status", env=env)
+    assert r.returncode == 0 and "LEDGER-b.md" in r.stdout, r.stderr
+
+
+def test_env_ledger_is_used(tmp_path):
+    make(tmp_path, name="LEDGER-a.md")
+    b = make(tmp_path, name="LEDGER-b.md")
+    assert ledger(tmp_path, "mark", "1", env={"LEDGER": str(b)}).returncode == 0
+    assert "- [x] 1. first\n" in read(b)
+
+
+def test_ambiguous_list_is_capped(tmp_path):
+    for i in range(8):
+        p = make(tmp_path, name=f"LEDGER-{i}.md")
+        os.utime(p, (1000 + i, 1000 + i))
+    r = ledger(tmp_path, "status")
+    assert r.returncode == 1
+    assert "8 live ledgers" in r.stderr and "(3 more)" in r.stderr
+    assert "LEDGER-7.md" in r.stderr and "LEDGER-0.md" not in r.stderr
+    assert "LEDGER=" in r.stderr

@@ -11,8 +11,10 @@ Replaces the ad-hoc `python3 -` heredocs chairs used to edit
     ledger add "text"             new - [ ] M. text before the V. line
     ledger note N "text"          append " — text", state unchanged
 
-Ledger: `-f PATH`, else the single live ledger in ./.workflow/ (same
-name rule as the hooks; *-archive.md excluded). Zero or several -> error.
+Ledger: `-f PATH`, else env LEDGER, else this session's bound ledger
+(the hooks' marker, key "ledger", via CLAUDE_CODE_SESSION_ID) if it is
+still live, else the single live ledger in ./.workflow/ (same name rule
+as the hooks; *-archive.md excluded). Zero or several -> error.
 Parsing shares the stop guard's fence handling and open-item regex, so
 items inside ``` fences are never touched. Edits are atomic (temp file
 in the same directory + os.replace), keep the file's line endings and
@@ -20,6 +22,7 @@ trailing newline, and never create a ledger. Exit 0 on success, 1 on
 any refusal (file unchanged), 2 on usage errors.
 """
 import argparse
+import json
 import os
 import re
 import stat
@@ -28,7 +31,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ledger_guard_stop import OPEN_ITEM_RE, _fence_mask  # noqa: E402
-from ledger_guard_write import _is_live_ledger_name  # noqa: E402
+from ledger_guard_write import _is_live_ledger_name, session_marker_path  # noqa: E402
 
 # Any item line: indent, bullet, box, optional "deferred: <reason> — ",
 # then the id ("7." or "V.").
@@ -43,14 +46,39 @@ class LedgerError(Exception):
     pass
 
 
+MAX_CANDIDATES = 5
+
+
+def _session_ledger():
+    """This session's bound ledger from the hooks' marker, or None."""
+    marker = session_marker_path(os.environ.get("CLAUDE_CODE_SESSION_ID"))
+    if not marker:
+        return None
+    try:
+        with open(marker, encoding="utf-8") as f:
+            bound = json.load(f).get("ledger")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not isinstance(bound, str) or not bound:
+        return None
+    bound = os.path.abspath(bound)  # absolute as written; relative -> cwd
+    if _is_live_ledger_name(os.path.basename(bound)) and os.path.isfile(bound):
+        return bound
+    return None
+
+
 def resolve(path_arg):
+    path_arg = path_arg or os.environ.get("LEDGER") or None
     if path_arg:
         if not os.path.isfile(path_arg):
             raise LedgerError(f"no such ledger file: {path_arg} (ledger never creates one)")
         return path_arg
+    bound = _session_ledger()
+    if bound:
+        return bound
     workflow = os.path.join(os.getcwd(), ".workflow")
     try:
-        names = sorted(os.listdir(workflow))
+        names = os.listdir(workflow)
     except OSError:
         names = []
     found = [os.path.join(".workflow", n) for n in names
@@ -58,9 +86,13 @@ def resolve(path_arg):
     if len(found) == 1:
         return found[0]
     if not found:
-        raise LedgerError("no live ledger in ./.workflow/ — pass -f PATH")
-    raise LedgerError("several live ledgers in ./.workflow/ — pass -f PATH:\n  "
-                      + "\n  ".join(found))
+        raise LedgerError("no live ledger in ./.workflow/ — pass -f PATH or set LEDGER=PATH")
+    found.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    shown = found[:MAX_CANDIDATES]
+    more = len(found) - len(shown)
+    raise LedgerError(f"{len(found)} live ledgers in ./.workflow/ — pass -f PATH "
+                      "or set LEDGER=PATH; most recent:\n  " + "\n  ".join(shown)
+                      + (f"\n  ({more} more)" if more else ""))
 
 
 def split_eol(line):
