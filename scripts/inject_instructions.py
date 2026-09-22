@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
 """SessionStart hook: inject the Dynamic Workflow instructions.
 
-This plugin is built for a Claude Fable 5 chair, with an Opus
-fallback: when the Fable limit is spent and the user moves the chair to
-Opus, the OPUS profile keeps the same discipline (the fable tier rests,
-verification and the escalation ceiling fall to opus). The chair is
-detected per session start and the matching profile injected:
+The plugin knows three chair profiles. The chair is detected per
+session start and the matching profile injected:
 
-    opus chair    -> dynamic-workflow-opus.md
-    anything else -> dynamic-workflow-fable.md   (fable / unknown)
+    opus chair (detected)    -> dynamic-workflow-opus-primary.md
+    FABLE_ORCH_PROFILE=opus  -> dynamic-workflow-opus.md
+    anything else            -> dynamic-workflow-fable.md  (fable / unknown)
+
+OPUS-PRIMARY is the default for an Opus chair: opus orchestrates and is
+the everyday ceiling, the fable tier stays available as a capped
+specialist (planner for hard plans, verifier for high-stakes closes).
+OPUS is the Fable-limit fallback — same discipline, the fable tier
+rests entirely. Since the model string cannot tell "Opus by choice"
+from "Opus because the Fable limit is spent", the fallback is reached
+ONLY through the explicit pin; a detected opus model never selects it.
 
 Detection, in priority order (first hit wins):
 
-    1. FABLE_ORCH_PROFILE = fable | opus   — explicit pin, overrides all
-       (auto / unset falls through to detection)
+    1. FABLE_ORCH_PROFILE = fable | opus | opus-primary — explicit pin,
+       overrides all (auto / unset / anything else falls through)
     2. the SessionStart payload's `model`  — authoritative for THIS
        session start, but the harness omits it on some resume/compact
        fires
@@ -25,20 +31,26 @@ Detection, in priority order (first hit wins):
        null-payload resume never regresses an opus session to fable
     5. fable — the safe default
 
+Steps 2-4 only ever yield `opus-primary` or `fable`. The marker's
+recorded PROFILE is not a detection input: a session pinned to the
+fallback stays there exactly as long as the pin is set, and a resume
+without it returns to OPUS-PRIMARY (via the switch delta below).
+
 A mid-session /model switch still only takes visible effect at the next
 session start (startup/resume/clear), because SessionStart is the sole
 injection point — but (3) makes that next start reliable instead of
 racy.
 
 PROFILE-SWITCH DELTA. When a session that already received a core
-profile re-fires with the OTHER profile selected (the Fable limit ran
-dry mid-session and the chair moved to Opus, or back), the full core is
+profile re-fires with ANOTHER profile selected (the chair moved between
+Fable and Opus, or the fallback pin was set or lifted), the full core is
 NOT re-sent — it is already in context, and re-sending it spends the
 very limit it exists to protect. A short switch note carries only the
 deltas instead:
 
-    fable -> opus -> profile-switch-to-opus.md
-    opus  -> fable -> profile-switch-to-fable.md
+    any -> fable        -> profile-switch-to-fable.md
+    any -> opus-primary -> profile-switch-to-opus-primary.md
+    any -> opus         -> profile-switch-to-opus.md
 
 The marker records the profile this session was last TOLD, so a plain
 re-fire (same profile) is indistinguishable from before — it still gets
@@ -292,18 +304,28 @@ def _is_teammate_session(max_hops=12):
     return False
 
 
+PROFILES = ("fable", "opus", "opus-primary")
+
+
+def _chair(model):
+    """Profile for a DETECTED chair model: an opus model is the
+    opus-primary chair, never the pin-only fallback."""
+    return "opus-primary" if _is_opus(model) else "fable"
+
+
 def resolve_profile(payload_model, configured_model, marker_model):
-    """Return (profile, source) — 'opus'|'fable' and which signal decided.
-    Priority: env override > payload model > settings default > marker."""
+    """Return (profile, source) — 'fable'|'opus-primary'|'opus' and which
+    signal decided. Priority: env override > payload model > settings
+    default > marker. Only the override can select 'opus' (fallback)."""
     override = (os.environ.get("FABLE_ORCH_PROFILE") or "").strip().lower()
-    if override in ("fable", "opus"):
+    if override in PROFILES:
         return override, "override"
     if str(payload_model or "").strip():
-        return ("opus" if _is_opus(payload_model) else "fable"), "payload"
+        return _chair(payload_model), "payload"
     if str(configured_model or "").strip():
-        return ("opus" if _is_opus(configured_model) else "fable"), "settings"
+        return _chair(configured_model), "settings"
     if str(marker_model or "").strip():
-        return ("opus" if _is_opus(marker_model) else "fable"), "marker"
+        return _chair(marker_model), "marker"
     return "fable", "default"
 
 
@@ -324,7 +346,7 @@ def main():
     profile, source = resolve_profile(model, _configured_model(), prev_model)
 
     # Profile-switch delta: this session already carries a core profile
-    # and the chair has since moved to the other tier. Re-sending ~3.7k
+    # and the chair has since moved to another profile. Re-sending ~3.7k
     # chars of unchanged rules costs the limit the profile exists to
     # protect, so only the deltas go out. Requires a RECORDED previous
     # profile — never inferred, because a delta on top of no core would

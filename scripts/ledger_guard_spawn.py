@@ -27,10 +27,10 @@ Exempt:
     of it; forcing a file adds nothing.
 
 The threshold defaults to 1500 chars — strict on purpose. This
-plugin is built for a Claude Fable 5 chair, where even small
-delegations should carry a ledger: Fable tokens are the scarce
-resource, and detail loss at task->plan translation is exactly
-what the ledger exists to catch.
+plugin is built for a premium chair (Fable, or Opus under either
+opus profile), where even small delegations should carry a ledger:
+chair tokens are the scarce resource, and detail loss at
+task->plan translation is exactly what the ledger exists to catch.
 
 Staleness: a ledger satisfies the gates unless it is STALE-COMPLETE —
 every item closed AND untouched since before this session started

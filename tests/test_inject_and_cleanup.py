@@ -12,8 +12,10 @@ def context_of(result):
     return result["hookSpecificOutput"]["additionalContext"]
 
 
-CORES = ("dynamic-workflow-fable.md", "dynamic-workflow-opus.md")
-SWITCHES = ("profile-switch-to-fable.md", "profile-switch-to-opus.md")
+CORES = ("dynamic-workflow-fable.md", "dynamic-workflow-opus.md",
+         "dynamic-workflow-opus-primary.md")
+SWITCHES = ("profile-switch-to-fable.md", "profile-switch-to-opus.md",
+            "profile-switch-to-opus-primary.md")
 PLAYBOOK = ("skills", "playbook", "SKILL.md")
 
 
@@ -234,6 +236,24 @@ def test_playbook_carries_the_worker_spec_and_long_output_blocks():
     assert "Usually it is not needed to draft an output multiple times." in text
 
 
+def test_opus_primary_core_caps_fable_to_planner_and_verifier():
+    # Marc's decision (2026-09-22): Opus is the everyday chair and fable a
+    # deliberate, capped specialist — hard plans and high-stakes closes —
+    # instead of resting entirely. The limit-spent fallback keeps its ban.
+    prim = _flat(_instr("dynamic-workflow-opus-primary.md"))
+    assert "(OPUS-PRIMARY profile)" in prim
+    assert "(OPUS profile)" not in prim     # the fallback tag must not match
+    assert "Do NOT spawn fable" not in prim
+    assert "≤2 spawns/task without the user's OK" in prim
+    assert "PLANNER for hard, irreversible or multi-system plans" in prim
+    assert "fable verifies HIGH-STAKES closes" in prim
+    assert "opus takes the role; ledger note, no restart" in prim
+    assert "security always" in prim
+    fallback = _flat(_instr("dynamic-workflow-opus.md"))
+    assert "Do NOT spawn fable agents" in fallback
+    assert "EVERY close gets a FRESH opus verifier" in fallback
+
+
 def test_injects_the_fable_profile(tmp_path):
     result = run_hook(
         INJECT,
@@ -261,10 +281,9 @@ def test_non_opus_models_get_the_fable_profile(tmp_path):
     assert "(FABLE profile)" in context_of(result)
 
 
-def test_opus_chair_gets_the_opus_fallback_profile(tmp_path):
-    # The Fable limit ran dry and the chair restarted on Opus: the
-    # matching profile keeps the same discipline with the fable tier
-    # resting.
+def test_opus_chair_gets_the_opus_primary_profile(tmp_path):
+    # A detected Opus chair is Opus BY CHOICE: fable stays available as a
+    # capped specialist. The limit fallback is pin-only (below).
     result = run_hook(
         INJECT,
         {"model": "claude-opus-5", "session_id": "s-opus"},
@@ -272,7 +291,8 @@ def test_opus_chair_gets_the_opus_fallback_profile(tmp_path):
         tmpdir=tmp_path,
     )
     text = context_of(result)
-    assert "(OPUS profile)" in text
+    assert "(OPUS-PRIMARY profile)" in text
+    assert "(OPUS profile)" not in text
     assert "(FABLE profile)" not in text
 
 
@@ -290,7 +310,7 @@ def test_every_opus_generation_and_spelling_detects(tmp_path):
             env_extra={"CLAUDE_PLUGIN_ROOT": str(REPO)},
             tmpdir=tmp_path,
         )
-        assert "(OPUS profile)" in context_of(result), model
+        assert "(OPUS-PRIMARY profile)" in context_of(result), model
 
 
 def test_opus_lookalike_models_are_not_opus(tmp_path):
@@ -354,9 +374,10 @@ def _inject(tmp_path, payload, **env):
 def test_null_payload_falls_back_to_settings_opus(tmp_path):
     # The real bug: SessionStart omits `model` on some fires. The user's
     # configured default (/model wrote "opus[1m]" to settings.json) must
-    # still select the OPUS profile instead of defaulting to fable.
+    # still select the Opus chair instead of defaulting to fable.
     _write_settings(tmp_path, "opus[1m]")
-    assert "(OPUS profile)" in context_of(_inject(tmp_path, {"session_id": "s1"}))
+    assert "(OPUS-PRIMARY profile)" in context_of(
+        _inject(tmp_path, {"session_id": "s1"}))
 
 
 def test_null_payload_falls_back_to_settings_fable(tmp_path):
@@ -369,13 +390,30 @@ def test_payload_model_beats_settings(tmp_path):
     # fallback for when the payload omits the model.
     _write_settings(tmp_path, "claude-fable-5")
     r = _inject(tmp_path, {"model": "claude-opus-4-8", "session_id": "s3"})
-    assert "(OPUS profile)" in context_of(r)
+    assert "(OPUS-PRIMARY profile)" in context_of(r)
 
 
 def test_env_override_opus_beats_fable_payload(tmp_path):
     r = _inject(tmp_path, {"model": "claude-fable-5", "session_id": "s4"},
                 FABLE_ORCH_PROFILE="opus")
     assert "(OPUS profile)" in context_of(r)
+
+
+def test_env_pin_opus_is_the_only_road_to_the_fallback(tmp_path):
+    # An opus model cannot say "the Fable limit is spent" — only the pin
+    # can, so the pin beats the detected OPUS-PRIMARY chair.
+    text = context_of(_inject(tmp_path, {"model": "claude-opus-5[1m]",
+                                         "session_id": "s4b"},
+                              FABLE_ORCH_PROFILE="opus"))
+    assert "(OPUS profile)" in text
+    assert "(OPUS-PRIMARY profile)" not in text
+    assert _marker(tmp_path, "s4b")["profile"] == "opus"
+
+
+def test_env_pin_opus_primary_is_accepted(tmp_path):
+    r = _inject(tmp_path, {"model": "claude-fable-5", "session_id": "s4c"},
+                FABLE_ORCH_PROFILE="opus-primary")
+    assert "(OPUS-PRIMARY profile)" in context_of(r)
 
 
 def test_env_override_fable_beats_opus_payload(tmp_path):
@@ -387,7 +425,7 @@ def test_env_override_fable_beats_opus_payload(tmp_path):
 def test_env_override_auto_falls_through_to_detection(tmp_path):
     r = _inject(tmp_path, {"model": "claude-opus-4-8", "session_id": "s6"},
                 FABLE_ORCH_PROFILE="auto")
-    assert "(OPUS profile)" in context_of(r)
+    assert "(OPUS-PRIMARY profile)" in context_of(r)
 
 
 def test_marker_keeps_opus_sticky_on_null_payload(tmp_path):
@@ -397,7 +435,8 @@ def test_marker_keeps_opus_sticky_on_null_payload(tmp_path):
     _inject(tmp_path, {"model": "claude-opus-4-8", "session_id": "s7"})
     marker = tmp_path / "fable-orch-model-s7.json"
     assert json.loads(marker.read_text())["model"] == "claude-opus-4-8"
-    assert "(OPUS profile)" in context_of(_inject(tmp_path, {"session_id": "s7"}))
+    assert "(OPUS-PRIMARY profile)" in context_of(
+        _inject(tmp_path, {"session_id": "s7"}))
     assert json.loads(marker.read_text())["model"] == "claude-opus-4-8"
 
 
@@ -409,7 +448,7 @@ def test_inject_metric_records_detection_source(tmp_path):
     _inject(tmp_path, {"session_id": "s8"}, HOME=str(home), FABLE_ORCH_METRICS="1")
     rec = json.loads((home / ".claude" / "fable-orch" / "metrics.jsonl")
                      .read_text().splitlines()[0])
-    assert rec["profile"] == "opus" and rec["source"] == "settings"
+    assert rec["profile"] == "opus-primary" and rec["source"] == "settings"
 
 
 # --- profile-switch delta: same session, the chair changed tiers ---
@@ -419,10 +458,10 @@ def _marker(tmp_path, sid):
                       .read_text(encoding="utf-8"))
 
 
-def test_fable_to_opus_switch_on_resume_injects_only_the_delta(tmp_path):
-    # The Fable limit ran dry mid-session and the user moved the chair to
-    # Opus. On a RESUME the core is provably still in this session's
-    # context; re-sending it spends the very limit the switch preserves.
+def test_fable_to_opus_primary_switch_on_resume_injects_only_the_delta(tmp_path):
+    # The user moved the chair from Fable to Opus mid-session. On a
+    # RESUME the core is provably still in this session's context;
+    # re-sending it spends the very limit the switch preserves.
     assert "(FABLE profile)" in context_of(
         _inject(tmp_path, {"model": "claude-fable-5", "session_id": "s-sw1"}))
     assert _marker(tmp_path, "s-sw1")["profile"] == "fable"
@@ -430,15 +469,29 @@ def test_fable_to_opus_switch_on_resume_injects_only_the_delta(tmp_path):
     text = context_of(_inject(tmp_path, {"model": "claude-opus-5",
                                          "session_id": "s-sw1",
                                          "source": "resume"}))
-    assert "Profile switch → OPUS chair" in text
-    assert "(OPUS profile)" not in text   # the full core is NOT re-sent
+    assert "Profile switch → OPUS-PRIMARY chair" in text
+    assert "(OPUS-PRIMARY profile)" not in text   # the full core is NOT re-sent
     assert len(text) < 600
-    assert _marker(tmp_path, "s-sw1")["profile"] == "opus"
+    assert _marker(tmp_path, "s-sw1")["profile"] == "opus-primary"
+
+
+def test_opus_primary_to_opus_switch_on_resume_injects_only_the_delta(tmp_path):
+    # The Fable limit ran dry under an Opus chair and the user pinned the
+    # fallback: the delta takes fable off the table, nothing more.
+    _inject(tmp_path, {"model": "claude-opus-5", "session_id": "s-sw4"})
+    assert _marker(tmp_path, "s-sw4")["profile"] == "opus-primary"
+    text = context_of(_inject(tmp_path, {"model": "claude-opus-5",
+                                         "session_id": "s-sw4",
+                                         "source": "resume"},
+                              FABLE_ORCH_PROFILE="opus"))
+    assert "Profile switch → OPUS chair" in text
+    assert "(OPUS profile)" not in text
+    assert _marker(tmp_path, "s-sw4")["profile"] == "opus"
 
 
 def test_opus_to_fable_switch_on_resume_injects_only_the_delta(tmp_path):
-    # The limit reset and the chair moved back.
-    assert "(OPUS profile)" in context_of(
+    # The chair moved back from Opus to Fable.
+    assert "(OPUS-PRIMARY profile)" in context_of(
         _inject(tmp_path, {"model": "claude-opus-5", "session_id": "s-sw2"}))
     text = context_of(_inject(tmp_path, {"model": "claude-fable-5",
                                          "session_id": "s-sw2",
@@ -452,7 +505,7 @@ def test_switching_back_and_forth_on_resume_keeps_delivering_deltas(tmp_path):
     # fable -> opus -> fable inside one session: each hop is a delta, and
     # the marker tracks the CURRENT profile, never the original.
     _inject(tmp_path, {"model": "claude-fable-5", "session_id": "s-sw3"})
-    assert "Profile switch → OPUS" in context_of(
+    assert "Profile switch → OPUS-PRIMARY" in context_of(
         _inject(tmp_path, {"model": "claude-opus-5", "session_id": "s-sw3",
                            "source": "resume"}))
     assert "Profile switch → FABLE" in context_of(
@@ -475,9 +528,9 @@ def test_switch_on_a_context_losing_fire_gets_the_full_core(tmp_path):
         text = context_of(_inject(tmp_path, {"model": "claude-opus-5",
                                              "session_id": sid,
                                              "source": fire}))
-        assert "(OPUS profile)" in text, fire     # the FULL core
+        assert "(OPUS-PRIMARY profile)" in text, fire     # the FULL core
         assert "Profile switch" not in text, fire
-        assert _marker(tmp_path, sid)["profile"] == "opus", fire
+        assert _marker(tmp_path, sid)["profile"] == "opus-primary", fire
 
 
 def test_unknown_source_takes_the_safe_side(tmp_path):
@@ -490,7 +543,7 @@ def test_unknown_source_takes_the_safe_side(tmp_path):
         payload = {"model": "claude-opus-5", "session_id": sid}
         payload.update(payload_extra)
         text = context_of(_inject(tmp_path, payload))
-        assert "(OPUS profile)" in text, payload_extra
+        assert "(OPUS-PRIMARY profile)" in text, payload_extra
         assert "Profile switch" not in text, payload_extra
 
 
@@ -521,7 +574,7 @@ def test_legacy_marker_without_profile_never_gets_a_bare_delta(tmp_path):
     text = context_of(_inject(tmp_path, {"model": "claude-opus-5",
                                          "session_id": "s-legacy-p",
                                          "source": "resume"}))
-    assert "(OPUS profile)" in text
+    assert "(OPUS-PRIMARY profile)" in text
     assert "Profile switch" not in text
 
 
@@ -538,7 +591,7 @@ def test_switch_metric_is_distinguishable(tmp_path):
     assert json.loads(lines[0])["event"] == "inject"      # unchanged
     rec = json.loads(lines[1])
     assert rec["event"] == "inject_switch"                # its own event
-    assert rec["profile"] == "opus" and rec["from_profile"] == "fable"
+    assert rec["profile"] == "opus-primary" and rec["from_profile"] == "fable"
     # `fire` survives the gate: it is how we learn which sources real
     # fallback re-fires actually arrive on, before widening the gate.
     assert rec["fire"] == "resume"
@@ -640,8 +693,8 @@ def test_switch_delta_still_carries_the_ledger_reminder(tmp_path):
     text = context_of(_inject(tmp_path, {"model": "claude-opus-5",
                                          "session_id": "s-led-sw",
                                          "source": "resume"}))
-    assert "Profile switch → OPUS chair" in text
-    assert "(OPUS profile)" not in text       # still a delta, not a core
+    assert "Profile switch → OPUS-PRIMARY chair" in text
+    assert "(OPUS-PRIMARY profile)" not in text   # still a delta, not a core
     assert f"Live ledger for this session: {ledger} — re-read it" in text
     assert text.index("Profile switch") < text.index("Live ledger")
     assert _marker(tmp_path, "s-led-sw")["ledger"] == str(ledger)

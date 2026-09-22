@@ -250,6 +250,28 @@ def test_block_band_blocks_with_computed_numbers(tmp_path):
     assert body["profile"] == "fable"  # keys carried forward
 
 
+def test_block_prices_an_opus_chair_at_opus_rates(tmp_path):
+    # opus-primary chair: 412k at the opus 1h write rate; the output-token
+    # equivalent is unchanged because the rate ratio is the same.
+    write_marker(tmp_path, started=time.time() - 30 * HOUR, session=SESSION,
+                 model="claude-opus-5-5[1m]", profile="opus-primary",
+                 last_stop=time.time() - 9 * HOUR)
+    transcript = write_transcript(tmp_path, 412000)
+    reason = run_hook(SCRIPT, prompt_payload(tmp_path, transcript=transcript),
+                      tmpdir=tmp_path)["reason"]
+    assert "~$3.30 list" in reason
+    assert "~165k output-token equivalents" in reason
+
+
+def test_marker_without_profile_falls_back_to_the_model(tmp_path):
+    write_marker(tmp_path, started=time.time() - 30 * HOUR, session=SESSION,
+                 model="opus[1m]", last_stop=time.time() - 9 * HOUR)
+    transcript = write_transcript(tmp_path, 412000)
+    reason = run_hook(SCRIPT, prompt_payload(tmp_path, transcript=transcript),
+                      tmpdir=tmp_path)["reason"]
+    assert "~$3.30 list" in reason
+
+
 def test_block_names_the_bound_ledger(tmp_path):
     ledger = tmp_path / "LEDGER-topic.md"
     ledger.write_text("- [ ] 1. open\n", encoding="utf-8")
