@@ -1,0 +1,8 @@
+#!/bin/sh
+# `ledger` on PATH: Claude Code appends a plugin's bin/ to PATH.
+# Git Bash on Windows often has only `python`, so fall back to it.
+script="$(dirname "$0")/../scripts/ledger.py"
+if command -v python3 >/dev/null 2>&1; then
+    exec python3 "$script" "$@"
+fi
+exec python "$script" "$@"

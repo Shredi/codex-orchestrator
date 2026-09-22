@@ -545,16 +545,27 @@ def main():
             pass  # cleanup is best-effort; the guard's decision already went out
 
 
-def _outside_fences(text):
-    """Drop fenced code blocks — a ``` example checklist is not an open item."""
-    kept, fenced = [], False
-    for line in text.splitlines():
+# One open ledger item; shared with scripts/ledger.py.
+OPEN_ITEM_RE = re.compile(r"^\s*[-*] \[ \](?:\s.*)?$", re.M)
+
+
+def _fence_mask(lines):
+    """Per line: True when it lies outside a ``` fence (fence lines
+    themselves count as fenced). Shared with scripts/ledger.py."""
+    mask, fenced = [], False
+    for line in lines:
         if line.lstrip().startswith("```"):
             fenced = not fenced
-            continue
-        if not fenced:
-            kept.append(line)
-    return "\n".join(kept)
+            mask.append(False)
+        else:
+            mask.append(not fenced)
+    return mask
+
+
+def _outside_fences(text):
+    """Drop fenced code blocks — a ``` example checklist is not an open item."""
+    lines = text.splitlines()
+    return "\n".join(l for l, keep in zip(lines, _fence_mask(lines)) if keep)
 
 
 TEAMMATE_DETECT_BUDGET = 1.5  # seconds; the walk measures ~5ms in practice
@@ -667,8 +678,7 @@ def run_guard(data):
     except Exception:
         return
 
-    open_items = re.findall(r"^\s*[-*] \[ \](?:\s.*)?$",
-                            _outside_fences(text), flags=re.M)
+    open_items = OPEN_ITEM_RE.findall(_outside_fences(text))
     if not open_items:
         return
 
@@ -694,8 +704,9 @@ def run_guard(data):
             f"LEDGER GUARD: {ledger} still has {len(open_items)} "
             f"open item(s):\n{preview}{more}\n\n"
             "If you are CLOSING a workflow: address each item and mark it '- [x]' "
-            "(only after verification confirms it), or '- [~] deferred: <reason>' "
-            "with user approval, and run the fresh-agent verification phase if you "
+            "(only after verification confirms it) with `ledger mark N`, or "
+            "'- [~] deferred: <reason>' with user approval via "
+            "`ledger defer N \"<reason>\"`, and run the fresh-agent verification phase if you "
             "haven't. If you are NOT closing a workflow, acknowledge the open-item "
             "count in one short line and stop — this reminder fires once per "
             "session. Archive the ledger (rename to LEDGER-<topic>-archive.md) "
