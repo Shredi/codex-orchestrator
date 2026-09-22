@@ -367,3 +367,14 @@ def test_frontmatter_double_quoted_scalar_is_unescaped(codex_sync):
     assert fm["description"] == 'Answer any "what does X say" question'
     # and the TOML emitter round-trips it as a plain quote, not \\"
     assert codex_sync._toml_str(fm["description"]) == '"Answer any \\"what does X say\\" question"'
+
+
+def test_project_agent_body_round_trips_backslashes_and_triple_quotes(codex_sync):
+    """Regression (22.09.): the body went raw into a TOML basic multi-line
+    string, so `C:\\claude` / `\\010` made the file unparseable and `\\n`
+    silently turned into a newline."""
+    body = 'Repo at `C:\\claude`, dig shows `\\010`, keep `\\n` literal, and """quoted""".\n'
+    text = "---\nname: x\ndescription: d\nmodel: sonnet\n---\n\n" + body
+    fields, parsed_body = codex_sync.parse_frontmatter(text)
+    rendered = codex_sync.render_project_agent("x", fields, parsed_body, codex_sync.load_profile("openai"))
+    assert tomllib.loads(rendered)["developer_instructions"].strip() == body.strip()

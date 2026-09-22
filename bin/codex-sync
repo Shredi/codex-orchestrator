@@ -378,7 +378,9 @@ def render_project_agent(name: str, fields: dict, body: str, profile_data: dict)
     if fields.get("description"):
         lines.append(f"description = {_toml_str(fields['description'])}")
     lines.append('developer_instructions = """')
-    lines.append(body.rstrip("\n"))
+    # Basic multi-line string: escape backslashes (Windows paths, `\\010`) and
+    # any `"""` run in the body, or TOML rejects/mangles it.
+    lines.append(body.rstrip("\n").replace("\\", "\\\\").replace('"""', '\\"\\"\\"'))
     lines.append('"""')
     if model:
         lines.append(f'model = "{model}"')
