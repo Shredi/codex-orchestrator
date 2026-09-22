@@ -5,10 +5,10 @@ description: Orchestrator playbook — the delegation contract: research, output
 
 # Orchestrator Playbook
 
-Both chair profiles (FABLE and OPUS). The injected core wins on
-routing and limits; this is the detail behind it. Paste-ready worker
-blocks: `spec-blocks.md`, next to this SKILL.md (repo path
-`skills/playbook/spec-blocks.md`).
+All three chair profiles (FABLE, OPUS-PRIMARY, OPUS). The injected
+core wins on routing and limits; this is the detail behind it.
+Paste-ready worker blocks: `spec-blocks.md`, next to this SKILL.md
+(repo path `skills/playbook/spec-blocks.md`).
 
 ## Research pipeline — fan out, no mid-flight dumps
 

@@ -45,6 +45,7 @@ ALWAYS PASSES, no matter how cold or how large:
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -74,8 +75,26 @@ CODEX_BYTES_PER_TOKEN = 4
 # something a human reacts to. The 1h cache-write rate is what a cold
 # resume actually pays (subscription sessions were measured at 100% 1h
 # TTL); the output rate converts that into "how much of the limit".
-CACHE_WRITE_USD_PER_MTOK = 20.0
-OUTPUT_USD_PER_MTOK = 50.0
+# Keyed by the CHAIR's tier (the marker's profile, else its model):
+# (1h cache write, output). Anything not recognised as an opus chair —
+# fable, a pre-profile marker, a non-Claude harness — keeps fable rates.
+CHAIR_RATES_USD_PER_MTOK = {
+    "fable": (20.0, 50.0),
+    "opus": (8.0, 20.0),
+}
+CACHE_WRITE_USD_PER_MTOK, OUTPUT_USD_PER_MTOK = CHAIR_RATES_USD_PER_MTOK["fable"]
+_OPUS_RE = re.compile(r"\bopus(?![a-z])", re.IGNORECASE)
+
+
+def chair_rates(marker):
+    """(cache-write, output) USD/MTok for the chair this marker records."""
+    marker = marker or {}
+    profile = str(marker.get("profile") or "").strip().lower()
+    if profile:
+        tier = "opus" if profile.startswith("opus") else "fable"
+    else:
+        tier = "opus" if _OPUS_RE.search(str(marker.get("model") or "")) else "fable"
+    return CHAIR_RATES_USD_PER_MTOK[tier]
 
 
 def _env_float(name, default, minimum=0.0):
@@ -390,10 +409,11 @@ def fmt_tokens(tokens):
     return f"{int(round(tokens / 1000.0))}k"
 
 
-def cost(tokens):
+def cost(tokens, rates=None):
     """(list-price dollars, output-token equivalents) for re-caching."""
-    usd = tokens / 1000000.0 * CACHE_WRITE_USD_PER_MTOK
-    equiv = tokens * (CACHE_WRITE_USD_PER_MTOK / OUTPUT_USD_PER_MTOK)
+    write, output = rates or (CACHE_WRITE_USD_PER_MTOK, OUTPUT_USD_PER_MTOK)
+    usd = tokens / 1000000.0 * write
+    equiv = tokens * (write / output)
     return usd, equiv
 
 
@@ -405,23 +425,23 @@ def bound_ledger(marker):
     return None
 
 
-def block_reason(tokens, gap_seconds, ack_min, ledger):
-    usd, equiv = cost(tokens)
+def block_reason(tokens, gap_seconds, ack_min, ledger, rates=None):
+    usd, equiv = cost(tokens, rates)
     where = ledger if ledger else 'none bound'
     return (
         f"COLD CACHE - this session holds ~{fmt_tokens(tokens)} tokens of "
         f"context and was idle {fmt_gap(gap_seconds)}; the 1-hour prompt "
         f"cache is cold, so this message would re-write the whole context "
         f"(~${usd:.2f} list, ~{fmt_tokens(equiv)} output-token equivalents "
-        f"of Fable limit).\n"
+        f"of the chair's usage limit).\n"
         f"/clear and start fresh (live ledger: {where}) - the ledger on disk "
         f"carries the state, and /compact would re-write the context too.\n"
         f"Or send any prompt again within {ack_min:g} min to proceed anyway."
     )
 
 
-def warn_message(tokens, gap_seconds):
-    usd, equiv = cost(tokens)
+def warn_message(tokens, gap_seconds, rates=None):
+    usd, equiv = cost(tokens, rates)
     return (
         f"Cold-cache resume: ~{fmt_tokens(tokens)} tokens of context "
         f"re-written after {fmt_gap(gap_seconds)} idle "
@@ -485,7 +505,7 @@ def run_guard(data):
     ack = _num(marker.get("cold_ack"))
     if ack > 0 and 0 <= now - ack <= ack_min * 60.0:
         tokens = int(_num(marker.get("cold_ctx")))
-        usd, equiv = cost(tokens)
+        usd, equiv = cost(tokens, chair_rates(marker))
         _metric("cold_ack", session_id, ctx_tokens=tokens,
                 gap_min=round(gap / 60.0, 1), est_usd=round(usd, 2),
                 est_out_equiv=int(equiv))
@@ -499,7 +519,8 @@ def run_guard(data):
 
     block_at = _env_int("FABLE_ORCH_COLD_BLOCK_TOKENS", BLOCK_TOKENS_DEFAULT)
     warn_at = _env_int("FABLE_ORCH_COLD_WARN_TOKENS", WARN_TOKENS_DEFAULT)
-    usd, equiv = cost(tokens)
+    rates = chair_rates(marker)
+    usd, equiv = cost(tokens, rates)
     ledger = bound_ledger(marker)
 
     if block_at > 0 and tokens >= block_at:
@@ -519,7 +540,7 @@ def run_guard(data):
                 est_out_equiv=int(equiv))
         print(json.dumps({
             "decision": "block",
-            "reason": block_reason(tokens, gap, ack_min, ledger),
+            "reason": block_reason(tokens, gap, ack_min, ledger, rates),
         }))
         return
 
@@ -529,7 +550,7 @@ def run_guard(data):
                 gap_min=round(gap / 60.0, 1), est_usd=round(usd, 2),
                 est_out_equiv=int(equiv))
         print(json.dumps({
-            "systemMessage": warn_message(tokens, gap),
+            "systemMessage": warn_message(tokens, gap, rates),
             "hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
                 "additionalContext": warn_context(tokens, gap, ledger),
