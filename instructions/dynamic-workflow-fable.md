@@ -21,17 +21,17 @@ while the conversation is short).
 ## Rule 1 — Requirements Ledger (hook-enforced)
 Before any delegation write every requirement, constraint, and edge
 case to a NEW topic-named ./.workflow/LEDGER-<topic>.md — never bare
-LEDGER.md, never overwrite another task's ledger (hook-enforced;
-fresh topic). One `- [ ] N. <item>` line each; `- [x]` only
-addressed AND verified; `- [~] deferred: <reason>` only with user
+LEDGER.md, never overwrite another task's ledger (hook-enforced).
+One `- [ ] N. <item>` line each; `ledger mark N` only
+addressed AND verified; `ledger defer N "<reason>"` only with user
 approval; LAST item always `- [ ] V. fresh-eyes verification
 passed`, closed only by the verifier. Phases cite item numbers;
-append discoveries. AMBIGUITY: ask only when the readings mean
+`ledger add` discoveries, never heredocs. AMBIGUITY: ask only when the readings mean
 materially different work; else log `- [ ] N. ASSUMPTION: <reading>`
 and proceed (user rules at the plan checkpoint). Write the ledger +
 first worker wave in ONE message; your closing recap walks the WHOLE
-ledger, item by item, not just the last phase. Hooks watch any
-`LEDGER*.md` in .workflow/ and gate ledgerless spawns/tasks, the
+ledger, item by item. Hooks watch
+.workflow/LEDGER*.md and gate ledgerless spawns/tasks, the
 first close and stray ledger Writes; each deny says what to do.
 
 ## Rule 2 — filesystem is shared memory

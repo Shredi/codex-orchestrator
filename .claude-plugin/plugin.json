@@ -1,7 +1,7 @@
 {
   "name": "orchestrator",
   "description": "Token-frugal multi-agent orchestration for Claude Code, with three chair profiles: a Fable chair, an Opus chair that keeps Fable as a capped planner and high-stakes verifier, and an Opus fallback for when the Fable limit runs dry. The chair plans and decides, Sonnet carries the volume, Opus takes the hard slices — routed by tier, not by a per-spawn effort dial — and fresh-eyes verification guards every close. A Requirements Ledger and guard hooks enforce the discipline mechanically, and finished tmux teammates are reaped automatically.",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "author": {
     "name": "Yusuf Demirkoparan",
     "url": "https://github.com/Rylaa"
