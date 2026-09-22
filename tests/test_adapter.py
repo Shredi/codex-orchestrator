@@ -591,9 +591,11 @@ def test_bin_ledger_wrapper_runs_vendored_core(tmp_path):
     wf.mkdir()
     ledger = wf / "LEDGER-t.md"
     ledger.write_text("# t\n\n- [ ] 1. one\n- [ ] V. verify\n")
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("CLAUDE_CODE_SESSION_ID", "LEDGER")}  # never the live session's ledger
     proc = subprocess.run([str(REPO / "bin" / "ledger"), "mark", "1"],
                           cwd=tmp_path, capture_output=True, text=True,
-                          timeout=30)
+                          timeout=30, env=env)
     assert proc.returncode == 0, proc.stderr
     assert "- [x] 1. one" in ledger.read_text()
 
