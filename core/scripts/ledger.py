@@ -262,6 +262,12 @@ def main(argv=None):
     if getattr(args, "n", None) is not None and not re.fullmatch(r"\d+|[vV]", args.n):
         print(f"ledger: item must be a number or V, got {args.n!r}", file=sys.stderr)
         return 2
+    for name in ("note", "reason", "text"):
+        val = getattr(args, name, None)
+        if val is not None and ("\n" in val or "\r" in val):
+            print(f"ledger: {name} must not contain \\n or \\r "
+                  "(no multi-line text arguments)", file=sys.stderr)
+            return 2
     try:
         led = Ledger(resolve(args.file))
         msg = args.fn(led, args)

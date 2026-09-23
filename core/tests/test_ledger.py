@@ -5,6 +5,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 from conftest import SCRIPTS
 
 BODY = (
@@ -103,6 +105,21 @@ def test_add_without_v_appends_after_last_item(tmp_path):
     p = make(tmp_path, "- [ ] 1. a\n- [x] 2. b\n\nnotes\n")
     assert ledger(tmp_path, "add", "c").returncode == 0
     assert read(p) == "- [ ] 1. a\n- [x] 2. b\n- [ ] 3. c\n\nnotes\n"
+
+
+@pytest.mark.parametrize("bad", ["injected\n- [ ] 99. phantom", "bad\rreturn"])
+@pytest.mark.parametrize("cmd_args", [
+    ("mark", "1"),
+    ("defer", "4"),
+    ("add",),
+    ("note", "1"),
+])
+def test_rejects_newline_or_cr_in_text_argument(tmp_path, cmd_args, bad):
+    p = make(tmp_path)
+    r = ledger(tmp_path, *cmd_args, bad)
+    assert r.returncode == 2
+    assert "\\n" in r.stderr or "\\r" in r.stderr
+    assert read(p) == BODY
 
 
 def test_v_needs_verifier_flag(tmp_path):
