@@ -35,7 +35,9 @@ or hanging core script, an unwritable metrics log — every one of them
 exits 0 with no output. A hook that can wedge a session is worse than
 the discipline it enforces.
 
-Configuration (this file; the core's own knobs still apply):
+Configuration (this file; the core's own knobs still apply — including
+FABLE_ORCH_MODE=plain, which reaches the core through child_env's
+pass-through; the adapter only drops its ledger note in that mode):
     CODEX_ADAPTER_HARNESS=<name>   value exported to the core as
                                    FABLE_ORCH_HARNESS (default "codex")
     CODEX_ADAPTER_TOOL_GATE=0      don't re-check tool names in-process
@@ -674,7 +676,10 @@ def to_codex(result, codex_event, guard, codex_tool=None):
             reason = hso.get("permissionDecisionReason")
             if isinstance(reason, str):
                 hso["permissionDecisionReason"] = reason + CODEX_WRITE_NOTE
-        if guard == "inject_instructions":
+        # Plain mode (core-v10+, FABLE_ORCH_MODE=plain) injects one line
+        # and no ledger rules, so there is no `ledger` prose to annotate.
+        plain = (os.environ.get("FABLE_ORCH_MODE") or "").strip().lower() == "plain"
+        if guard == "inject_instructions" and not plain:
             ctx = hso.get("additionalContext")
             if (isinstance(ctx, str) and ctx
                     and os.path.isfile(os.path.join(CORE_SCRIPTS,

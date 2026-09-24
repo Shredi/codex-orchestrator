@@ -31,6 +31,7 @@ HOOKS_JSON = REPO / "hooks" / "hooks.json"
 STRIP_ENV = [
     "LEDGER_GUARD_THRESHOLD", "LEDGER_GUARD_TASKS", "LEDGER_GUARD_STOP_MODE",
     "LEDGER_WRITE_GUARD", "FABLE_ORCH_METRICS", "FABLE_ORCH_PROFILE",
+    "FABLE_ORCH_MODE",
     "FABLE_ORCH_COLD_GUARD", "FABLE_ORCH_COLD_MIN",
     "FABLE_ORCH_COLD_BLOCK_TOKENS", "FABLE_ORCH_COLD_WARN_TOKENS",
     "FABLE_ORCH_COLD_ACK_MIN", "FABLE_ORCH_SWARM_CLEANUP",
@@ -583,6 +584,26 @@ def test_session_start_tells_codex_how_to_run_ledger(sandbox):
     assert f'"{script}"' in ctx
     assert ctx.rstrip().endswith("picks the ledger).")
     assert len(ctx) < 20000   # hooks.json additionalContextLimit
+
+
+def test_plain_mode_gets_no_ledger_note(adapter_mod, monkeypatch):
+    """FABLE_ORCH_MODE=plain: the core injects one line and no ledger
+    rules, so the adapter must not append its `ledger` PATH note."""
+    line = "Orchestrator plain mode (FABLE_ORCH_MODE=plain): work inline."
+    result = {"hookSpecificOutput": {"hookEventName": "SessionStart",
+                                     "additionalContext": line}}
+    monkeypatch.setenv("FABLE_ORCH_MODE", "plain")
+    out = adapter_mod.to_codex(result, "SessionStart", "inject_instructions")
+    assert out["hookSpecificOutput"]["additionalContext"] == line
+    monkeypatch.delenv("FABLE_ORCH_MODE")
+    out = adapter_mod.to_codex(result, "SessionStart", "inject_instructions")
+    assert out["hookSpecificOutput"]["additionalContext"].startswith(line + "\n\n")
+    assert "not on PATH under Codex" in out["hookSpecificOutput"]["additionalContext"]
+
+
+def test_plain_mode_reaches_the_core(adapter_mod, monkeypatch):
+    monkeypatch.setenv("FABLE_ORCH_MODE", "plain")
+    assert adapter_mod.child_env({})["FABLE_ORCH_MODE"] == "plain"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX sh wrapper")
