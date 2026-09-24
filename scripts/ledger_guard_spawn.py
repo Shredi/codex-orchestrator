@@ -484,6 +484,18 @@ def _guard(data):
     }))
 
 
+def plain_mode():
+    """True when FABLE_ORCH_MODE=plain (case-insensitive) is set.
+
+    Plain mode turns the orchestration layer off for a session — no chair
+    profile, no ledger gates, no cold-cache guard — while the
+    destructive-command guard stays fully active (its scripts never read
+    this switch). Any other value, or unset, is the normal behaviour.
+    Duplicated verbatim in every hook it affects: the hooks run as
+    standalone scripts with no shared module to import from."""
+    return (os.environ.get("FABLE_ORCH_MODE") or "").strip().lower() == "plain"
+
+
 def main():
     try:
         data = json.load(sys.stdin)
@@ -491,6 +503,8 @@ def main():
         return  # malformed input -> never block
     if not isinstance(data, dict):
         return
+    if plain_mode():
+        return  # plain mode: no ledger gate on spawns/tasks
     try:
         _guard(data)
     except Exception:
