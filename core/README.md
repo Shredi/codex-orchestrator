@@ -362,6 +362,7 @@ Set these in `~/.claude/settings.json` under `"env"`.
 ├───────────────────────────────┼──────────────────┼────────────────────────────────────────────┤
 │ LEDGER_GUARD_THRESHOLD        │ 1500             │ spawn-guard gate (chars)                   │
 │ FABLE_ORCH_PROFILE            │ auto             │ pin chair: auto|fable|opus-primary|opus    │
+│ FABLE_ORCH_MODE               │ (unset)          │ plain: orchestration off, rm guard stays   │
 │ FABLE_ORCH_TEAMMATE_STOP      │ (off)            │ 1 lets the close guard hold teammates too  │
 │ FABLE_ORCH_TEAMMATE_INJECT    │ (off)            │ 1 injects the profile into teammates too   │
 │ LEDGER_GUARD_TASKS            │ 3                │ 3rd ledgerless tracker task denied; 0 off  │
@@ -382,6 +383,8 @@ Set these in `~/.claude/settings.json` under `"env"`.
 │ FABLE_ORCH_HARNESS            │ (unset)          │ stamp on every metrics line (adapter tag)  │
 └───────────────────────────────┴──────────────────┴────────────────────────────────────────────┘
 ```
+
+**Plain mode.** `FABLE_ORCH_MODE=plain` (case-insensitive) is for token-cheap turns that should not be orchestrated — e.g. a small task dispatched to `claude -p` from a chat front. The SessionStart injector sends one line instead of a chair profile and writes no session marker (so a later orchestrated `--resume` of the same session gets the full core, never a switch delta); the spawn/task, overwrite, binding and close guards and the cold-cache guard return immediately. The destructive-command guard is untouched: the PreToolUse deny/ask rules, the `rm` shim install and the PATH prepend all run exactly as before — its scripts never read the switch. Any other value, or unset, is the normal behaviour. Set it per process (`FABLE_ORCH_MODE=plain claude -p …`; Windows cmd: `set "FABLE_ORCH_MODE=plain" && claude -p …`) rather than in settings.json, or every session on the machine goes plain. An adapter that runs these scripts under another CLI's hooks only has to pass the variable through in the child environment.
 
 **The session marker.** The SessionStart injector writes a per-session temp file whose immutable `started` timestamp survives resume/clear/compact re-injections, and the SessionEnd reaper anchors its cleanup to it. It also carries the cold-cache guard's activity stamps (`last_stop`, `last_prompt`) and, while a block is outstanding, its acknowledgement. The same file carries the D1 `ledger` binding: bound → the close guard holds only that ledger; a marker that exists but was never bound → the close guard never holds it; no marker at all (manual install) → the original mtime-ownership rule (ledger touched after the session started). The SessionEnd hook removes the session's temp files and sweeps any older than 96 hours.
 

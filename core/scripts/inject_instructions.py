@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """SessionStart hook: inject the Dynamic Workflow instructions.
 
+FABLE_ORCH_MODE=plain short-circuits all of this: one plain-mode line
+is injected instead of a profile and the session marker is not written
+(see `main`).
+
 The plugin knows three chair profiles. The chair is detected per
 session start and the matching profile injected:
 
@@ -329,6 +333,25 @@ def resolve_profile(payload_model, configured_model, marker_model):
     return "fable", "default"
 
 
+PLAIN_MODE_NOTE = (
+    "Orchestrator plain mode (FABLE_ORCH_MODE=plain): no chair profile, no "
+    "Requirements Ledger, no plan checkpoint, no verifier — work inline. "
+    "The destructive-command guard stays active."
+)
+
+
+def plain_mode():
+    """True when FABLE_ORCH_MODE=plain (case-insensitive) is set.
+
+    Plain mode turns the orchestration layer off for a session — no chair
+    profile, no ledger gates, no cold-cache guard — while the
+    destructive-command guard stays fully active (its scripts never read
+    this switch). Any other value, or unset, is the normal behaviour.
+    Duplicated verbatim in every hook it affects: the hooks run as
+    standalone scripts with no shared module to import from."""
+    return (os.environ.get("FABLE_ORCH_MODE") or "").strip().lower() == "plain"
+
+
 def main():
     try:
         data = json.load(sys.stdin)
@@ -336,6 +359,22 @@ def main():
         data = {}
     if not isinstance(data, dict):
         data = {}
+
+    # Plain mode: one line instead of the profile, and the session marker
+    # is left alone. Not writing it is deliberate: a marker `profile` would
+    # claim an injection that never happened, and a later orchestrated
+    # `--resume` of this session would then get a switch delta on top of
+    # no core. With no marker, that resume gets the full core instead.
+    if plain_mode():
+        _metric("inject_skipped", data.get("session_id"),
+                model=data.get("model"), reason="plain")
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": PLAIN_MODE_NOTE,
+            }
+        }))
+        return
 
     model = data.get("model")  # optional; the harness omits it on some fires
     session_id = data.get("session_id")
