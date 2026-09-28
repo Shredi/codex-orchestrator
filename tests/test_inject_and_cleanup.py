@@ -51,8 +51,11 @@ def test_cores_stay_on_the_token_diet():
     # holding the detail, the same trade the v0.15.0 diet made.
     # opus-primary's budget was raised +300 on 2026-09-28 for the
     # fable-reviewer change (plan review rule + reviewer-tier rewrite).
+    # fable's budget was raised +500 on 2026-09-28 for the top-orchestrator
+    # chair (0.21.0: explicit model:, batching nudge, scout-first hygiene,
+    # child Opus orchestrator handoff).
     budgets = {
-        "dynamic-workflow-fable.md": 4000,
+        "dynamic-workflow-fable.md": 4500,
         "dynamic-workflow-opus.md": 4000,
         "dynamic-workflow-opus-primary.md": 4400,
     }
@@ -149,6 +152,13 @@ def test_preserved_decisions_survive_the_diet():
                "violation" in text, f"{name}: anti-gaming clause dropped"
         assert "The `Workflow` tool only on an explicit user ask." in text, \
             f"{name}: Workflow-tool clause dropped"
+    # 0.21.0 top-orchestrator chair: built-ins inherit the chair's model,
+    # so the fable core must demand an explicit tier on every spawn, and
+    # big multi-phase work goes to a child Opus orchestrator.
+    fable = _flat(_instr("dynamic-workflow-fable.md"))
+    assert 'model: "sonnet"' in fable, "fable: explicit model: pin dropped"
+    assert "INHERIT your model" in fable, "fable: built-in inherit rule dropped"
+    assert "child Opus orchestrator" in fable, "fable: child orchestrator handoff dropped"
     book = _flat(_playbook())
     assert "at most 2 per session" in book          # fork cap, in full
     assert "at most 40 lines TOTAL" in book         # report diet, in full
@@ -867,6 +877,47 @@ def test_teammate_is_skipped_even_when_the_profile_switched(tmp_path):
     assert data["profile"] == "fable"         # but NOT a phantom injection
 
 
+CHILD_HEAD = "CHILD ORCHESTRATOR (parent: fable)."
+
+
+def test_child_note_for_opus_primary_with_a_parent(tmp_path):
+    # 0.21.0: a Fable top chair launches a child Opus orchestrator with
+    # FABLE_ORCH_PARENT set; the child must not spend the fable limit and
+    # hands plan + result back as files.
+    text = context_of(_inject(tmp_path, {"model": "claude-opus-5", "session_id": "s-ch"},
+                              FABLE_ORCH_PARENT="fable"))
+    assert "(OPUS-PRIMARY profile)" in text
+    assert CHILD_HEAD in text
+    note = text[text.index(CHILD_HEAD):]
+    assert "spawn NO fable agents" in note and "plan-<topic>.md" in note
+    assert "result-<topic>.md" in note and 'model: "opus"' in note
+    assert len(note) < 600
+
+
+def test_child_note_absent_without_parent_for_fable_or_on_a_delta(tmp_path):
+    assert "CHILD ORCHESTRATOR" not in context_of(
+        _inject(tmp_path, {"model": "claude-opus-5", "session_id": "s-ch0"}))
+    assert "CHILD ORCHESTRATOR" not in context_of(
+        _inject(tmp_path, {"model": "claude-fable-5", "session_id": "s-ch1"},
+                FABLE_ORCH_PARENT="fable"))
+    _inject(tmp_path, {"model": "claude-fable-5", "session_id": "s-ch2"})
+    text = context_of(_inject(tmp_path, {"model": "claude-opus-5", "session_id": "s-ch2",
+                                         "source": "resume"}, FABLE_ORCH_PARENT="fable"))
+    assert "Profile switch → OPUS-PRIMARY chair" in text
+    assert "CHILD ORCHESTRATOR" not in text
+
+
+@POSIX  # HOME= is meant to redirect expanduser("~"); nt's expanduser ignores it
+def test_inject_metric_records_the_parent(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    _inject(tmp_path, {"model": "claude-opus-5", "session_id": "s-chm"},
+            HOME=str(home), FABLE_ORCH_METRICS="1", FABLE_ORCH_PARENT="fable")
+    rec = json.loads((home / ".claude" / "fable-orch" / "metrics.jsonl")
+                     .read_text().splitlines()[0])
+    assert rec["event"] == "inject" and rec["parent"] == "fable"
+
+
 def test_missing_model_still_injects(tmp_path):
     result = run_hook(
         INJECT,
@@ -1072,6 +1123,8 @@ def test_cleanup_removes_stop_sidecar_and_sweeps_old(tmp_path):
     sidecar.write_text("{}", encoding="utf-8")
     tasks = tmp_path / "fable-orch-tasks-s-clean.json"
     tasks.write_text('{"count": 2}', encoding="utf-8")
+    reads = tmp_path / "fable-orch-reads-s-clean.json"
+    reads.write_text('{"count": 3}', encoding="utf-8")
     stale = tmp_path / "fable-orch-model-dead-session.json"
     stale.write_text("{}", encoding="utf-8")
     old = time.time() - 120 * 3600  # past the 96h sweep window
@@ -1082,6 +1135,7 @@ def test_cleanup_removes_stop_sidecar_and_sweeps_old(tmp_path):
     assert run_hook(CLEANUP, {"session_id": "s-clean"}, tmpdir=tmp_path) is None
     assert not cache.exists()
     assert not sidecar.exists()
+    assert not reads.exists()
     assert not tasks.exists()  # the task-gate counter dies with the session
     assert not stale.exists()  # older than the 96h sweep window
     assert fresh.exists()      # other live sessions' files stay

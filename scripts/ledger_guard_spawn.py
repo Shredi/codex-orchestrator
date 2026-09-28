@@ -39,6 +39,13 @@ last week's finished ledger would silence the gates in a repo forever.
 A ledger with open items, or one touched this session, always
 satisfies; without a marker (manual install) existence alone wins.
 
+Adoption: an unbound session that a discovered ledger satisfies binds to
+it (/clear continuations, ended sessions' ledgers) — unless another LIVE
+session's marker already holds that ledger. Discovery picks the newest
+mtime, which is usually a concurrent tab's ledger; binding to it would
+make the Stop guard hold this session on someone else's open items. A
+foreign ledger still satisfies the gate, it just never binds.
+
 Configuration (all optional):
     LEDGER_GUARD_THRESHOLD   gate in chars (default 1500; unparseable
                              values fall back to it, negatives clamp
@@ -178,7 +185,10 @@ def guard_task_create(data):
     stale = bool(ledger) and not ledger_satisfies(ledger, session_id)
     if ledger and not stale:
         if not bound:
-            _bind_ledger(session_id, ledger)  # adoption: this session now owns it
+            if _claimed_elsewhere(ledger, session_id):
+                _metric("adopt_skipped", session_id, reason="foreign", ledger=ledger)
+            else:
+                _bind_ledger(session_id, ledger)  # adoption: this session now owns it
         return
 
     path = _task_sidecar(session_id)
@@ -373,6 +383,37 @@ def _bind_ledger(session_id, ledger):
     _write_marker_dict(session_id, marker)
 
 
+def _claimed_elsewhere(ledger, session_id):
+    """True if another live session's marker is already bound to `ledger`.
+
+    Discovery returns the newest-mtime ledger, which is often a concurrent
+    session's; adopting it would bind us to work that isn't ours. Markers
+    of ended sessions are deleted by SessionEnd, so any marker still in
+    the temp dir belongs to a live session. Fails open (False, i.e. adopt
+    as before) on any error; an unreadable/non-dict marker is skipped.
+    """
+    try:
+        safe = "".join(c for c in str(session_id) if c.isalnum() or c in "-_")
+        own = f"fable-orch-model-{safe}.json"
+        target = os.path.realpath(ledger)
+        tmp = tempfile.gettempdir()
+        for name in os.listdir(tmp):
+            if name == own or not (
+                name.startswith("fable-orch-model-") and name.endswith(".json")
+            ):
+                continue
+            try:
+                with open(os.path.join(tmp, name), encoding="utf-8") as f:
+                    other = json.load(f).get("ledger")
+                if isinstance(other, str) and os.path.realpath(other) == target:
+                    return True
+            except Exception:
+                continue
+        return False
+    except Exception:
+        return False
+
+
 def _session_started(session_id):
     """The session's immutable start time from the injector marker, or None."""
     if not session_id:
@@ -446,7 +487,10 @@ def _guard(data):
     stale = bool(ledger) and not ledger_satisfies(ledger, session_id)
     if ledger and not stale:
         if not bound:
-            _bind_ledger(session_id, ledger)  # adoption: this session now owns it
+            if _claimed_elsewhere(ledger, session_id):
+                _metric("adopt_skipped", session_id, reason="foreign", ledger=ledger)
+            else:
+                _bind_ledger(session_id, ledger)  # adoption: this session now owns it
         _metric("spawn_pass_over_threshold", session_id,
                 chars=len(text), threshold=limit,
                 tool=data.get("tool_name") or "")

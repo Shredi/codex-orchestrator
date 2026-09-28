@@ -258,6 +258,34 @@ def ledger_reminder(fire, ledger):
             "gone.")
 
 
+# CHILD MODE (0.21.0). A Fable top chair hands a big multi-phase task to
+# a child Opus orchestrator in its own session, launched with
+# FABLE_ORCH_PARENT set. The child keeps the opus-primary core but must
+# not spend the parent's fable limit (no fable reviewer/verifier, no
+# advisor) and hands its plan and result back as files the parent reads.
+CHILD_NOTE = (
+    "CHILD ORCHESTRATOR (parent: {parent}). Overrides Plan review and "
+    "Verification: spawn NO fable agents and ignore advisorModel. Write "
+    "the plan to .workflow/scratch/plan-<topic>.md and STOP for the "
+    "parent's review. Close with a fresh model: \"opus\" verifier, then "
+    "write .workflow/scratch/result-<topic>.md (≤ 40 lines) as your final "
+    "report."
+)
+
+
+def child_parent():
+    """FABLE_ORCH_PARENT, stripped; '' when unset or blank."""
+    return (os.environ.get("FABLE_ORCH_PARENT") or "").strip()
+
+
+def reads_sidecar_path(session_id):
+    """The chair read guard's per-session counter (chair_read_guard.py)."""
+    if not session_id:
+        return None
+    safe = "".join(c for c in str(session_id) if c.isalnum() or c in "-_")
+    return os.path.join(tempfile.gettempdir(), f"fable-orch-reads-{safe}.json")
+
+
 TEAMMATE_DETECT_BUDGET = 1.5  # seconds; the walk measures ~5ms in practice
 
 
@@ -387,6 +415,17 @@ def main():
     cache = session_model_cache_path(session_id)
     prev_started, prev_model, prev_profile, prev_ledger = _read_marker(cache)
 
+    # The chair read guard budgets reads per TASK: `clear` starts a new
+    # one and `compact` rewrote the context the reads were spent on, so
+    # both reset its counter. startup/resume keep it.
+    if fire in ("clear", "compact"):
+        reads = reads_sidecar_path(session_id)
+        if reads:
+            try:
+                os.remove(reads)
+            except OSError:
+                pass
+
     profile, source = resolve_profile(model, _configured_model(), prev_model)
 
     # Profile-switch delta: this session already carries a core profile
@@ -440,6 +479,13 @@ def main():
         reminder = ledger_reminder(fire, prev_ledger)
         if reminder:
             text = text.rstrip("\n") + "\n\n" + reminder + "\n"
+    parent = child_parent()
+    if text is not None and profile == "opus-primary" and parent and not switched:
+        # Child of a top chair: appended last so it overrides the core's
+        # Plan review / Verification paragraphs. Never on a switch delta —
+        # a chair that moved tiers mid-session was not launched as a child.
+        text = text.rstrip("\n") + "\n\n" + CHILD_NOTE.format(parent=parent) + "\n"
+    child = {"parent": parent} if parent else {}
 
     # Session marker for the guards (best effort; never fatal).
     # `started` marks the session's FIRST start and must survive the
@@ -518,10 +564,10 @@ def main():
         # SessionStart kinds real fallback re-fires arrive on — the data
         # a decision to widen the delta gate has to rest on.
         _metric("inject", session_id, model=model, profile=profile,
-                source=source, from_profile=prev_profile, fire=fire)
+                source=source, from_profile=prev_profile, fire=fire, **child)
     else:
         _metric("inject", session_id, model=model, profile=profile,
-                source=source)
+                source=source, **child)
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",

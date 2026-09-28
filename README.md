@@ -120,7 +120,7 @@ Before serious delegation the chair writes every requirement, constraint, and ed
 
 **Ambiguity goes in the ledger, not into a question.** The chair asks only when different readings would lead to materially different work; otherwise it records `- [ ] N. ASSUMPTION: <reading>` and proceeds, and you rule on it at the plan checkpoint — the harness now tells the model you are not watching in real time, so a question mid-task stalls the work instead of resolving it.
 
-**Per-session binding.** Two parallel sessions in the same repo used to share one newest-mtime "active ledger" — session A's close could be held on session B's newer ledger, or silenced by it. Now the first `Write`/`Edit`/`MultiEdit` a session makes to a live ledger binds that session to it (recorded in its own marker); a spawn or tracker task that is satisfied by a *discovered* ledger adopts and binds it the same way. A bound session's guards resolve only its own ledger, however new or old another session's is. A session with no binding yet — or none at all (manual install) — falls back to the original newest-wins discovery, so nothing before this changes.
+**Per-session binding.** Two parallel sessions in the same repo used to share one newest-mtime "active ledger" — session A's close could be held on session B's newer ledger, or silenced by it. Now the first `Write`/`Edit`/`MultiEdit` a session makes to a live ledger binds that session to it (recorded in its own marker); a spawn or tracker task that is satisfied by a *discovered* ledger adopts and binds it the same way — but only when no other live session already holds that ledger; a foreign ledger still satisfies the gate and is never bound. A bound session's guards resolve only its own ledger, however new or old another session's is. A session with no binding yet — or none at all (manual install) — falls back to the original newest-wins discovery, so nothing before this changes.
 
 ```markdown
 - [ ] 1. Every explicit requirement, one line each
@@ -131,7 +131,7 @@ Before serious delegation the chair writes every requirement, constraint, and ed
 
 ### 3 · Guard hooks
 
-Instructions are *advice*; hooks are *mechanism*. The failure points that get skipped under pressure are fenced:
+Instructions are *advice*; hooks are *mechanism*. The failure points that get skipped under pressure are fenced (a fourth `PreToolUse` hook, the Fable-only chair read guard, is §5):
 
 **Spawn guard** (`PreToolUse` on `Agent|Task|Workflow`) — gates the spawn `prompt`, or the Workflow `script`:
 
@@ -273,7 +273,26 @@ prompt submitted
 
 **It is a time heuristic, and says so.** No API reports prompt-cache state, so the guard infers coldness from the documented 1-hour TTL. It can be wrong in both directions: a warm cache blocked costs one re-send (three minutes of patience), a cold one missed costs nothing worse than today's behaviour.
 
-A seventh hook (`SessionEnd`) cleans up after the session: its temp files and **its tmux teammates**. The agent-teams backend parks teammates in tmux panes and never reaps them (measured in the wild: 63 orphaned agents holding ~5 GB; later, 9 panes parked for 11-30 hours) — on current Claude Code those panes sit inside **your own default tmux server**, on older versions in dedicated `claude-swarm-*` servers. The hook kills the session's own teammates wherever they live: the legacy `claude-swarm-<pid>` server whole (matched via the hook's nearest-claude ancestor or the `@session-<id>` pane tag), and on shared servers only the PANES carrying this session's `--parent-session-id` — a non-swarm server itself is never killed. Swarm servers idle 48h+ are swept too. Finished teammates don't wait for a SessionEnd that may be days away: a rate-limited sweep piggybacked on the Stop hook samples every teammate pane's CPU and kills panes idling below ~1% CPU for `FABLE_ORCH_TEAMMATE_IDLE_H` hours (default 1). A parked teammate still burns a mailbox-polling heartbeat, so idleness is a sustained low RATE, not a frozen clock — working siblings re-baseline and survive. The injected profile adds the front line: the chair dismisses a teammate (`shutdown_request`) the moment its final report is accepted.
+The `SessionEnd` hook cleans up after the session: its temp files and **its tmux teammates**. The agent-teams backend parks teammates in tmux panes and never reaps them (measured in the wild: 63 orphaned agents holding ~5 GB; later, 9 panes parked for 11-30 hours) — on current Claude Code those panes sit inside **your own default tmux server**, on older versions in dedicated `claude-swarm-*` servers. The hook kills the session's own teammates wherever they live: the legacy `claude-swarm-<pid>` server whole (matched via the hook's nearest-claude ancestor or the `@session-<id>` pane tag), and on shared servers only the PANES carrying this session's `--parent-session-id` — a non-swarm server itself is never killed. Swarm servers idle 48h+ are swept too. Finished teammates don't wait for a SessionEnd that may be days away: a rate-limited sweep piggybacked on the Stop hook samples every teammate pane's CPU and kills panes idling below ~1% CPU for `FABLE_ORCH_TEAMMATE_IDLE_H` hours (default 1). A parked teammate still burns a mailbox-polling heartbeat, so idleness is a sustained low RATE, not a frozen clock — working siblings re-baseline and survive. The injected profile adds the front line: the chair dismisses a teammate (`shutdown_request`) the moment its final report is accepted.
+
+### 5 · Chair read guard
+
+A Fable chair is the long-lived **top** chair (0.21.0): it talks with the user and judges, and every read it does itself is paid from the scarcest limit *and* stays in a context meant to outlive many tasks. So exploration goes to sonnet scouts that write briefs to `.workflow/scratch/`, and a `PreToolUse` hook on `Read|Grep|Glob|WebFetch|WebSearch|Bash` counts the chair's own non-brief reads per task:
+
+```
+read-shaped tool call
+  ├─ FABLE_ORCH_READ_GUARD=off|0 · plain mode ................ PASS
+  ├─ payload carries agent_id (a subagent's own read) ........ PASS  (uncounted)
+  ├─ marker profile != "fable" · teammate .................... PASS  (uncounted)
+  ├─ Bash whose first word is not cat/rg/grep/egrep/sed -n/
+  │  head/tail/find/curl/wget/less ........................... PASS  (uncounted)
+  ├─ exempt: .workflow/ path · ~/.claude/plans|handoffs ·
+  │  plugin skills/ · MEMORY.md/CLAUDE.md · Read limit ≤ 60 ·
+  │  Read of a file ≤ 6 KB · Grep/Glob on an allowlisted path .. PASS  (metered "exempt")
+  └─ counted (WebFetch/WebSearch always) → warn once AT 6, deny from 12
+```
+
+The warning is `additionalContext` ("spawn a sonnet scout for the rest"); the deny names the fix — the project's `scout` agent, or Explore/general-purpose with `model: "sonnet"`, writing its brief to `.workflow/scratch/` — and brief-sized reads stay open after it. The counter lives in `$TMPDIR/fable-orch-reads-<session>.json` and is reset by the injector on `clear` and `compact`. Subagent detection rests on a live payload capture (Claude Code 2.1.284): a subagent's `PreToolUse` payload carries `agent_id` + `agent_type`, the chair's never does — so the guard enforces rather than only warning. It never emits `allow`; it is Claude-Code-only (Codex has no fable profile).
 
 ## Fable 5.1 adjustments (2026-09)
 
@@ -287,6 +306,16 @@ Anthropic's [What's new in Claude Fable 5.1](https://platform.claude.com/docs/en
 - **The chair keeps working while a wave runs**, and a `compact`/`resume` session start points a bound chair back at its ledger file.
 
 Deliberately **not** duplicated, because Claude Code already injects them into the session: the batching nudge, the progress-update line, the autonomy block, the "Delivering work" block, and the "only you see that output" note. Security review still runs on Opus, and the chair profile still changes only at a session start.
+
+## Top-orchestrator chair (0.21.0)
+
+Fable back in the chair, as an orchestrator of orchestrators:
+
+- **Explicit tiers.** Built-in Explore/Plan/general-purpose *inherit* the chair's model, so every spawn from a Fable chair passes `model: "sonnet"` (or `"opus"`) — the core says so, and the switch note repeats it.
+- **Scouts, not chair reads.** Exploration goes to sonnet scouts writing to scratch; §5 enforces the budget (6 warn / 12 deny, `limit ≤ 60` and `.workflow/` free). The playbook's hygiene section now asks for exact content as a verbatim snippet in a scout brief.
+- **Long-lived, lean.** Compact or `/clear` between tasks, never mid-phase; ledger and briefs survive.
+- **Child orchestrators.** A big multi-phase task goes to a child Opus orchestrator in its own session (profile `opus-primary`, launched with `FABLE_ORCH_PARENT=fable`). The injector then appends a CHILD ORCHESTRATOR note: no fable spawns, `advisorModel` ignored, plan to `.workflow/scratch/plan-<topic>.md` then STOP for the parent's review, close with a fresh `model: "opus"` verifier, final report in `.workflow/scratch/result-<topic>.md` (≤ 40 lines). Never on a switch delta.
+- **Batching.** Before calling tools, list what comes next and request every independent item in one response.
 
 ## Watching the team live
 
@@ -383,6 +412,9 @@ Set these in `~/.claude/settings.json` under `"env"`.
 │ FABLE_ORCH_COLD_WARN_TOKENS   │ 50000            │ cold context at/above this warns; 0 off    │
 │ FABLE_ORCH_COLD_ACK_MIN       │ 3                │ minutes a blocked prompt can be re-sent    │
 │ FABLE_ORCH_HARNESS            │ (unset)          │ stamp on every metrics line (adapter tag)  │
+│ FABLE_ORCH_READ_GUARD         │ (on)             │ off (or 0) disables the chair read guard   │
+│ FABLE_ORCH_READ_BUDGET        │ 6,12             │ chair reads: warn at W, deny from D        │
+│ FABLE_ORCH_PARENT             │ (unset)          │ opus-primary child of this parent chair    │
 └───────────────────────────────┴──────────────────┴────────────────────────────────────────────┘
 ```
 
@@ -390,7 +422,7 @@ Set these in `~/.claude/settings.json` under `"env"`.
 
 **The session marker.** The SessionStart injector writes a per-session temp file whose immutable `started` timestamp survives resume/clear/compact re-injections, and the SessionEnd reaper anchors its cleanup to it. It also carries the cold-cache guard's activity stamps (`last_stop`, `last_prompt`) and, while a block is outstanding, its acknowledgement. The same file carries the D1 `ledger` binding: bound → the close guard holds only that ledger; a marker that exists but was never bound → the close guard never holds it; no marker at all (manual install) → the original mtime-ownership rule (ledger touched after the session started). The SessionEnd hook removes the session's temp files and sweeps any older than 96 hours.
 
-**Metrics.** Every hook appends one event line to `~/.claude/fable-orch/metrics.jsonl` (events only — never prompt content): injections per model, mid-session profile switches, spawn/task denies and passes, stop blocks and suppressions, reaps, cold-cache blocks/warns/acks with the context size and idle gap behind each one, and the destructive-command guard's denies/asks (the rule that fired plus the first 60 characters of the command — never more). `python3 scripts/stats.py` prints the summary, so the next "how is this performing?" question is answered with data. Disable with `FABLE_ORCH_METRICS=0`. Set `FABLE_ORCH_HARNESS=<name>` to add a `"harness": "<name>"` key to every line a run writes — for a non-Claude-Code caller (an adapter that runs these scripts as subprocesses under another CLI's hooks) to tell its own events apart in the same shared log, without touching a byte the core itself wrote. Unset by default: the key is omitted and Claude Code's own output is unchanged.
+**Metrics.** Every hook appends one event line to `~/.claude/fable-orch/metrics.jsonl` (events only — never prompt content): injections per model, mid-session profile switches, spawn/task denies and passes, stop blocks and suppressions, reaps, cold-cache blocks/warns/acks with the context size and idle gap behind each one, the chair read guard's counted/exempt/denied reads (tool and reason only, never a path), and the destructive-command guard's denies/asks (the rule that fired plus the first 60 characters of the command — never more). `python3 scripts/stats.py` prints the summary, so the next "how is this performing?" question is answered with data. Disable with `FABLE_ORCH_METRICS=0`. Set `FABLE_ORCH_HARNESS=<name>` to add a `"harness": "<name>"` key to every line a run writes — for a non-Claude-Code caller (an adapter that runs these scripts as subprocesses under another CLI's hooks) to tell its own events apart in the same shared log, without touching a byte the core itself wrote. Unset by default: the key is omitted and Claude Code's own output is unchanged.
 
 **Codex CLI transcripts.** The cold-cache guard's `context_tokens()` reads a Codex CLI session JSONL (`~/.codex/sessions/**/*.jsonl`) the same way it reads a Claude Code one — detected by the first line's `type` (`session_meta`), not by an env var, so a Codex `transcript_path` handed to the guard just works. It reads the newest `event_msg`/`token_count` (or the rarer top-level `token_usage_record`) usage line for the current input-context size, falling back to a byte-size estimate when a transcript has no usage line yet.
 
@@ -400,7 +432,7 @@ Set these in `~/.claude/settings.json` under `"env"`.
 python3 -m pytest tests/ -q
 ```
 
-The hooks are plain stdin/stdout JSON filters; the tests run them end-to-end as subprocesses — the spawn threshold and its env override, the fork exemption, Workflow script gating, the task-list gate (counting, one deny per session, session isolation), the upward ledger search and its repo-root/worktree/$HOME boundaries, stop-guard session scoping and ownership, the cold-cache bands (slash commands and teammates never blocked, the ack window and its expiry, tail-only transcript reads, fail-open on every corrupt input), metrics emission and opt-out, the `FABLE_ORCH_HARNESS` stamp (present/absent across every hook script), the destructive-command guard (the 2026-09-09 incident line, every deny class including the nested and remote ones, the ask band, the allow band, the `updatedInput` rewrite and its idempotence) and the `rm` shim — driven exclusively through `SAFE_RM_DRYRUN=1`, so no test ever runs a real `rm`, Codex CLI transcript detection and both its usage-line shapes plus the byte-size fallback, injection, the mid-session profile-switch delta, cache cleanup, and teammate reaping (against a fake tmux/ps on PATH). A second layer pins the *content*: the cores stay under their size budget, both keep requiring the playbook skill, and the decisions that survived the diet (fresh-eyes on every close, the fork cap, the report cap, the batching rule) plus the Fable 5.1 additions (ledger assumptions, the whole-ledger recap, the decline false-positive check, the worker spec blocks), the effort-not-selectable-per-spawn correction, and the project-agent-roster rule, are asserted line by line.
+The hooks are plain stdin/stdout JSON filters; the tests run them end-to-end as subprocesses — the spawn threshold and its env override, the fork exemption, Workflow script gating, the task-list gate (counting, one deny per session, session isolation), the upward ledger search and its repo-root/worktree/$HOME boundaries, stop-guard session scoping and ownership, the cold-cache bands (slash commands and teammates never blocked, the ack window and its expiry, tail-only transcript reads, fail-open on every corrupt input), metrics emission and opt-out, the `FABLE_ORCH_HARNESS` stamp (present/absent across every hook script), the destructive-command guard (the 2026-09-09 incident line, every deny class including the nested and remote ones, the ask band, the allow band, the `updatedInput` rewrite and its idempotence) and the `rm` shim — driven exclusively through `SAFE_RM_DRYRUN=1`, so no test ever runs a real `rm`, Codex CLI transcript detection and both its usage-line shapes plus the byte-size fallback, injection, the mid-session profile-switch delta, cache cleanup, teammate reaping (against a fake tmux/ps on PATH), the chair read guard (fable-only and main-session-only activation, every exemption, Bash read detection, warn/deny thresholds and their env override, session isolation, the clear/compact reset) and the child-orchestrator note (present only for an `opus-primary` chair with `FABLE_ORCH_PARENT`, never on a switch delta). A second layer pins the *content*: the cores stay under their size budget, both keep requiring the playbook skill, and the decisions that survived the diet (fresh-eyes on every close, the fork cap, the report cap, the batching rule) plus the Fable 5.1 additions (ledger assumptions, the whole-ledger recap, the decline false-positive check, the worker spec blocks), the effort-not-selectable-per-spawn correction, and the project-agent-roster rule, are asserted line by line.
 
 The hooks decide "chair or teammate?" by walking the real process tree, so the suite pins that ambient too — otherwise running the tests from inside a named teammate makes every chair-behaviour test fail for a reason unrelated to the code.
 

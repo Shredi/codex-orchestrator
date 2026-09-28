@@ -67,6 +67,17 @@
             "statusMessage": "Destructive guard (bash)"
           }
         ]
+      },
+      {
+        "matcher": "^(Read|Grep|Glob|WebFetch|WebSearch|Bash)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/chair_read_guard.py\"",
+            "timeout": 5,
+            "statusMessage": "Chair read guard"
+          }
+        ]
       }
     ],
     "PostToolUse": [

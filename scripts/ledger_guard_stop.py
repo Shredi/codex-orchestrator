@@ -7,10 +7,11 @@ Open item = a line matching '- [ ]'. Closed: '- [x]' (done+verified) or
 Blocking is SCOPED so the reminder doesn't tax every conversational turn
 (measured in the wild: hundreds of per-turn blocks per project):
 
-  1. OWNERSHIP — block only if the ledger was modified during THIS
-     session. Session start is approximated by the mtime of the
-     per-session model cache written by the SessionStart injector;
-     without a cache (manual install), ownership is assumed.
+  1. OWNERSHIP — block only on the ledger THIS session is bound to:
+     bound by writing it (ledger_bind.py) or by adopting an unclaimed
+     one at a spawn/task gate (a ledger another live session already
+     holds is never adopted). No marker (manual install) = legacy
+     newest-wins discovery.
   2. CADENCE — once per session per ledger. A sidecar file in the
      temp dir records the ledgers this session was already held on.
 
@@ -241,37 +242,6 @@ def find_ledger(start_dir):
         if parent == d:
             return None
         d = parent
-
-
-def owned_by_session(ledger, session_id):
-    """True if the ledger was modified during this session.
-
-    Session start is the injector cache's immutable `started` field —
-    the cache FILE is rewritten on resume/clear/compact re-injections,
-    so its mtime moves and serves only as the fallback for caches
-    written by older versions. 5s slack for filesystem timestamp
-    granularity. No cache (manual install) → assume ownership rather
-    than go silent.
-    """
-    cache = session_model_cache_path(session_id)
-    if not cache or not os.path.isfile(cache):
-        return True
-    try:
-        start = None
-        try:
-            with open(cache, encoding="utf-8") as f:
-                raw = json.load(f).get("started")
-            start = float(raw) if raw is not None else None
-        except Exception:
-            start = None
-        if start is None:
-            start = os.path.getmtime(cache)
-        # A future `started` (clock jump, corrupt value) must not silence
-        # the guard for the whole session — clamp to now.
-        start = min(start, time.time())
-        return os.path.getmtime(ledger) >= start - 5.0
-    except OSError:
-        return True
 
 
 def _read_blocked(path):
@@ -635,15 +605,15 @@ def touch_session_files(session_id):
     LIVE session's state just because SessionStart hasn't re-fired in
     days. Content is untouched — only mtime moves.
 
-    Called AFTER the guard decision, never before: owned_by_session
-    falls back to the marker's mtime when the marker carries no
-    `started` (legacy or corrupt), so touching first would reset that
-    fallback to "now" and silently disown every ledger. All three files
+    Called AFTER the guard decision, never before: the marker's mtime is
+    the fallback session start for a marker without `started` (legacy or
+    corrupt), so touching first would reset it to "now". All three files
     are warmed — warming only the marker let the sweep reap the stop and
     tasks sidecars, resetting the task counter and re-blocking a ledger
     that had already had its one reminder.
     """
-    for prefix in ("fable-orch-model", "fable-orch-stop", "fable-orch-tasks"):
+    for prefix in ("fable-orch-model", "fable-orch-stop", "fable-orch-tasks",
+                   "fable-orch-reads"):
         path = _tmp_json(prefix, session_id)
         if path and os.path.isfile(path):
             try:
@@ -700,12 +670,7 @@ def run_guard(data):
 
     mode = (os.environ.get("LEDGER_GUARD_STOP_MODE") or "once-per-session").strip().lower()
     if mode != "every-turn":
-        # No separate mtime-ownership check here: a bound session skips it
-        # by design (the binding IS the ownership decision), and in the
-        # unbound/no-marker legacy branch owned_by_session() degenerates
-        # to True by construction (same cache-file existence check this
-        # function already made to decide `marker is None`) — the old
-        # `not owned_by_session(...)` guard was dead code on this path.
+        # No mtime-ownership check: the binding IS the ownership decision.
         if already_reminded(session_id, ledger):
             _metric("stop_suppressed", session_id, reason="already-reminded", ledger=ledger)
             return

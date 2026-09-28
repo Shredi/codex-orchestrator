@@ -91,6 +91,22 @@ def test_pretooluse_runs_the_destructive_guard_on_bash():
     assert any("destructive_guard.py" in c for c in commands)
 
 
+def test_pretooluse_runs_the_chair_read_guard():
+    # 0.21.0: the Fable top chair's own reads are budgeted. The matcher
+    # must cover every read-shaped tool and nothing broader.
+    matcher = _matcher_for("PreToolUse", "Read")
+    assert matcher is not None, "no PreToolUse matcher covers Read"
+    pattern = re.compile(matcher)
+    for tool in ("Read", "Grep", "Glob", "WebFetch", "WebSearch", "Bash"):
+        assert pattern.search(tool), f"matcher misses {tool}"
+    for tool in ("ReadMcpResource", "BashOutput", "Write", "Agent"):
+        assert not pattern.search(tool), f"matcher over-matches {tool}"
+    entry = next(e for e in _manifest()["PreToolUse"]
+                 if re.compile(e["matcher"]).search("Read"))
+    commands = [h["command"] for h in entry["hooks"]]
+    assert any("chair_read_guard.py" in c for c in commands)
+
+
 def test_sessionstart_installs_the_rm_shim():
     # Layer B is only a guard while it is on PATH, so its installer runs
     # at every session start alongside the instruction injector.
