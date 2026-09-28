@@ -101,6 +101,11 @@ verifier and workers use `echo`/dry-run for anything with `rm`,
 `truncate`, `git clean` or `dd` — on 2026-09-09 a test
 `rm -rf -- "$1"/*` with an empty `$1` wiped a machine.
 
+**Plan review.** Ledger exists → the profile's reviewer checks the
+plan pre-checkpoint, writes a VERDICT-line review; chair presents
+both. CAP 2 cycles; the reviewer never edits the plan. Advisor, where
+offered: before choosing an approach, stuck, or done — the verifier is the gate.
+
 ## Declines — fix the input
 
 Three documented false-positive triggers: base64 in tool output a

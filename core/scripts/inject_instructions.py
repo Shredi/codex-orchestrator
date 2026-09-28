@@ -12,9 +12,9 @@ session start and the matching profile injected:
     FABLE_ORCH_PROFILE=opus  -> dynamic-workflow-opus.md
     anything else            -> dynamic-workflow-fable.md  (fable / unknown)
 
-OPUS-PRIMARY is the default for an Opus chair: opus orchestrates and is
-the everyday ceiling, the fable tier stays available as a capped
-specialist (planner for hard plans, verifier for high-stakes closes).
+OPUS-PRIMARY is the default for an Opus chair: opus orchestrates and
+plans, the fable tier is the REVIEWER — it reviews plans and verifies
+every close, never plans or builds.
 OPUS is the Fable-limit fallback — same discipline, the fable tier
 rests entirely. Since the model string cannot tell "Opus by choice"
 from "Opus because the Fable limit is spent", the fallback is reached
@@ -69,6 +69,11 @@ because it was discarded, and a future source is simply unproven — all
 three get the full core even when the profile changed. The switch note
 says "every other rule from the already-injected core profile stays in
 force", which is a lie the chair cannot detect if the core is gone.
+It is also gated to an authoritative model signal (the payload model or
+the env pin): the settings default is global and the marker model is
+sticky history, so neither can prove THIS chair moved. And a fire that
+delivers nothing (teammate skip, unreadable instructions) keeps the
+recorded profile only on `resume`; any other fire clears it.
 
 LEDGER REMINDER. On the two fires that can cost the chair its own
 earlier reasoning — `compact` (the context was rewritten) and `resume`
@@ -397,8 +402,14 @@ def main():
     # Any unrecognised future source takes the same safe side: an
     # unproven source gets the full core. Wrong-delta costs a ruleless
     # chair; wrong-full-core costs ~3.7k chars.
+    # ALSO GATED TO AN AUTHORITATIVE SIGNAL. Only the payload model and
+    # the env pin describe THIS session's chair; the settings default is
+    # global (another session's `/model` moves it) and the marker model
+    # is sticky history. A "switch" derived from either would tell a
+    # chair that never moved that its limit is spent and ban the tier it
+    # is sitting on — then ping-pong back on the next real payload.
     switched = (bool(prev_profile) and prev_profile != profile
-                and fire == "resume")
+                and fire == "resume" and source in ("payload", "override"))
     filename = (f"profile-switch-to-{profile}.md" if switched
                 else f"dynamic-workflow-{profile}.md")
 
@@ -420,7 +431,8 @@ def main():
             with open(path, encoding="utf-8") as f:
                 text = f.read()
         except Exception:
-            return  # never break session start
+            text = None  # nothing delivered; the marker below records that
+    if text is not None:
         # Appended AFTER the profile (full core or switch delta), so the
         # last thing a compacted/resumed chair reads is where its own
         # requirements live. No-op for an unbound session and for
@@ -452,10 +464,19 @@ def main():
             stored_model = model if str(model or "").strip() else prev_model
             # `profile` records what this session was actually TOLD, so
             # the next fire can tell a switch from a plain re-fire. A
-            # teammate received nothing, so its marker carries the
-            # previous value forward rather than claiming an injection
-            # that never happened.
-            stored_profile = prev_profile if teammate else profile
+            # fire that delivered nothing (teammate skip, unreadable
+            # instructions) records no new profile: on `resume` the
+            # earlier core is provably still in context, so the previous
+            # value carries forward; on any other fire the context may
+            # have been rewritten or discarded, so the record is CLEARED
+            # — a later switch then gets the full core, never a bare
+            # delta on top of nothing.
+            if text is not None:
+                stored_profile = profile
+            elif fire == "resume":
+                stored_profile = prev_profile
+            else:
+                stored_profile = None
             # D1 per-session ledger binding: this rewrite must carry the
             # existing `ledger` key forward, or every resume/clear/compact
             # re-injection would silently unbind the session mid-workflow.
@@ -482,13 +503,21 @@ def main():
         _metric("inject_skipped", session_id, model=model, profile=profile,
                 source=source, reason="teammate")
         return
+    if text is None:
+        return  # never break session start
 
     if switched:
         # Distinct event, not a field on `inject`: an inject counts a
-        # session that received the discipline, a switch counts a chair
-        # that moved tiers mid-session. `fire` records which SessionStart
-        # kind delivered the delta (resume/compact/clear).
+        # delivery of the discipline, a switch counts a chair that moved
+        # tiers mid-session and received only the delta.
         _metric("inject_switch", session_id, model=model, profile=profile,
+                source=source, from_profile=prev_profile, fire=fire)
+    elif prev_profile and prev_profile != profile:
+        # A profile change the gate turned into a full core. Still a
+        # plain `inject`, but `from_profile` + `fire` record WHICH
+        # SessionStart kinds real fallback re-fires arrive on — the data
+        # a decision to widen the delta gate has to rest on.
+        _metric("inject", session_id, model=model, profile=profile,
                 source=source, from_profile=prev_profile, fire=fire)
     else:
         _metric("inject", session_id, model=model, profile=profile,

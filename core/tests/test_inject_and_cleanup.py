@@ -49,18 +49,35 @@ def test_cores_stay_on_the_token_diet():
     # effort-not-selectable sentence, decline check) fit inside it:
     # each states the RULE in one line and points at the playbook section
     # holding the detail, the same trade the v0.15.0 diet made.
+    # opus-primary's budget was raised +300 on 2026-09-28 for the
+    # fable-reviewer change (plan review rule + reviewer-tier rewrite).
+    budgets = {
+        "dynamic-workflow-fable.md": 4000,
+        "dynamic-workflow-opus.md": 4000,
+        "dynamic-workflow-opus-primary.md": 4400,
+    }
     for name in CORES:
         text = _instr(name)
-        assert len(text) < 4000, f"{name} is {len(text)} chars — over the 4k core diet"
+        budget = budgets[name]
+        assert len(text) < budget, \
+            f"{name} is {len(text)} chars — over the {budget}-char core diet"
 
 
 def test_switch_notes_stay_tiny():
     # A switch note is pure delta on top of a core the session already
     # has. Anything approaching core size means the delta grew back into
-    # a second profile and the saving is gone.
+    # a second profile and the saving is gone. profile-switch-to-opus-
+    # primary's budget was raised +150 on 2026-09-28 (fable-reviewer delta).
+    budgets = {
+        "profile-switch-to-fable.md": 600,
+        "profile-switch-to-opus.md": 600,
+        "profile-switch-to-opus-primary.md": 750,
+    }
     for name in SWITCHES:
         text = _instr(name)
-        assert len(text) < 600, f"{name} is {len(text)} chars — over the 600-char delta budget"
+        budget = budgets[name]
+        assert len(text) < budget, \
+            f"{name} is {len(text)} chars — over the {budget}-char delta budget"
 
 
 def test_playbook_skill_exists_and_stays_bounded():
@@ -70,9 +87,9 @@ def test_playbook_skill_exists_and_stays_bounded():
     path = REPO.joinpath(*PLAYBOOK)
     assert path.is_file(), f"missing playbook skill: {path}"
     text = path.read_text(encoding="utf-8")
-    # 5.25k since the destructive-command SAFETY sentence landed in the
-    # verification paragraph; still a budget, not a dumping ground.
-    assert len(text) < 5250, f"SKILL.md is {len(text)} chars — over budget"
+    # 5.5k since the Plan review paragraph landed (2026-09-28,
+    # fable-reviewer change); still a budget, not a dumping ground.
+    assert len(text) < 5600, f"SKILL.md is {len(text)} chars — over budget"
     assert "name: playbook" in text  # the namespaced literal below depends on it
     # The paste-ready blocks sit beside SKILL.md and are read only when a
     # spawn needs them — but without a budget of their own the 5k pin
@@ -124,6 +141,14 @@ def test_preserved_decisions_survive_the_diet():
         # v0.15.0 additions: the report diet and the batching rule.
         assert "≤40 lines" in text, f"{name}: report line cap dropped"
         assert "five greps is one agent" in text, f"{name}: batching rule dropped"
+        # Dropped by the v0.15.0 diet while the hooks kept enforcing
+        # them (restored from upstream v0.15.1): a chair that does not
+        # know a gate exists reads its deny as a harness bug.
+        assert "(forks exempt;" in text, f"{name}: fork exemption dropped"
+        assert "dodging tracker tasks to duck that count IS the " \
+               "violation" in text, f"{name}: anti-gaming clause dropped"
+        assert "The `Workflow` tool only on an explicit user ask." in text, \
+            f"{name}: Workflow-tool clause dropped"
     book = _flat(_playbook())
     assert "at most 2 per session" in book          # fork cap, in full
     assert "at most 40 lines TOTAL" in book         # report diet, in full
@@ -236,19 +261,29 @@ def test_playbook_carries_the_worker_spec_and_long_output_blocks():
     assert "Usually it is not needed to draft an output multiple times." in text
 
 
-def test_opus_primary_core_caps_fable_to_planner_and_verifier():
-    # Marc's decision (2026-09-22): Opus is the everyday chair and fable a
-    # deliberate, capped specialist — hard plans and high-stakes closes —
-    # instead of resting entirely. The limit-spent fallback keeps its ban.
+def test_opus_primary_core_fable_is_reviewer_not_planner():
+    # Marc's decision (2026-09-27/28): Fable's planner role and the ≤2
+    # spawn cap are removed from opus-primary — Opus plans hard plans
+    # itself. Fable becomes the REVIEWER tier: it reviews plans (when a
+    # ledger exists) and verifies EVERY close, never builds or plans.
+    # The limit-spent fallback (same verifier, model: "opus" override)
+    # keeps its ban on Fable never being asked to build or plan.
     prim = _flat(_instr("dynamic-workflow-opus-primary.md"))
     assert "(OPUS-PRIMARY profile)" in prim
     assert "(OPUS profile)" not in prim     # the fallback tag must not match
     assert "Do NOT spawn fable" not in prim
-    assert "≤2 spawns/task without the user's OK" in prim
-    assert "PLANNER for hard, irreversible or multi-system plans" in prim
-    assert "fable verifies HIGH-STAKES closes" in prim
-    assert "opus takes the role; ledger note, no restart" in prim
-    assert "security always" in prim
+    # planner clause absent
+    assert "≤2 spawns/task without the user's OK" not in prim
+    assert "PLANNER for hard, irreversible or multi-system plans" not in prim
+    assert "fable verifies HIGH-STAKES closes" not in prim
+    # reviewer tier + plan-review clause present
+    assert "fable is the REVIEWER tier" in prim
+    assert "never builds or plans" in prim
+    assert "no spawn cap on review spawns" in prim
+    assert "VERDICT: PASS|FAIL (n blockers)" in prim
+    assert "CAP 2 plan-review cycles" in prim
+    assert "EVERY close gets a FRESH fable verifier" in prim
+    assert 'model: "opus"` override; ledger note, no restart' in prim
     fallback = _flat(_instr("dynamic-workflow-opus.md"))
     assert "Do NOT spawn fable agents" in fallback
     assert "EVERY close gets a FRESH opus verifier" in fallback
@@ -282,8 +317,8 @@ def test_non_opus_models_get_the_fable_profile(tmp_path):
 
 
 def test_opus_chair_gets_the_opus_primary_profile(tmp_path):
-    # A detected Opus chair is Opus BY CHOICE: fable stays available as a
-    # capped specialist. The limit fallback is pin-only (below).
+    # A detected Opus chair is Opus BY CHOICE: fable is the reviewer
+    # tier, never a planner. The limit fallback is pin-only (below).
     result = run_hook(
         INJECT,
         {"model": "claude-opus-5", "session_id": "s-opus"},
@@ -471,7 +506,7 @@ def test_fable_to_opus_primary_switch_on_resume_injects_only_the_delta(tmp_path)
                                          "source": "resume"}))
     assert "Profile switch → OPUS-PRIMARY chair" in text
     assert "(OPUS-PRIMARY profile)" not in text   # the full core is NOT re-sent
-    assert len(text) < 600
+    assert len(text) < 750  # opus-primary switch delta budget (2026-09-28)
     assert _marker(tmp_path, "s-sw1")["profile"] == "opus-primary"
 
 
@@ -611,6 +646,120 @@ def test_gated_full_core_is_not_counted_as_a_switch(tmp_path):
     lines = (home / ".claude" / "fable-orch" / "metrics.jsonl").read_text(
         encoding="utf-8").strip().splitlines()
     assert [json.loads(l)["event"] for l in lines] == ["inject", "inject"]
+    # ...but the change is still RECORDED, on the inject event itself:
+    # which fires real fallback re-fires arrive on is the only data a
+    # decision to widen the delta gate can rest on.
+    rec = json.loads(lines[1])
+    assert rec["from_profile"] == "fable" and rec["fire"] == "compact"
+    assert "from_profile" not in json.loads(lines[0])
+
+
+def test_settings_sourced_profile_never_produces_a_delta(tmp_path):
+    # The settings default is GLOBAL: `/model opus` in an unrelated
+    # session moves it. A Fable chair resuming with a null payload must
+    # not be handed a switch note on that evidence — only the payload
+    # model and the env pin describe THIS session's chair.
+    _inject(tmp_path, {"model": "claude-fable-5", "session_id": "s-sw-set"})
+    _write_settings(tmp_path, "claude-opus-5")
+    text = context_of(_inject(tmp_path, {"session_id": "s-sw-set",
+                                         "source": "resume"}))
+    assert "Profile switch" not in text
+    assert "(OPUS-PRIMARY profile)" in text   # full core, as any null-payload fire
+    # A later AUTHORITATIVE signal still switches from what was told.
+    text = context_of(_inject(tmp_path, {"model": "claude-fable-5",
+                                         "session_id": "s-sw-set",
+                                         "source": "resume"}))
+    assert "Profile switch → FABLE chair" in text
+
+
+def test_sticky_marker_model_never_produces_a_delta(tmp_path):
+    # The marker model is history, not evidence: a null-payload resume
+    # resolved from it must not be read as the chair having moved.
+    write_marker(tmp_path, started=123.0, session="s-sw-mk",
+                 model="claude-opus-5", profile="fable")
+    text = context_of(_inject(tmp_path, {"session_id": "s-sw-mk",
+                                         "source": "resume"}))
+    assert "Profile switch" not in text
+    assert "(OPUS-PRIMARY profile)" in text
+
+
+def test_env_override_is_authoritative_for_the_delta(tmp_path):
+    _inject(tmp_path, {"model": "claude-fable-5", "session_id": "s-sw-env"})
+    text = context_of(_inject(tmp_path, {"session_id": "s-sw-env",
+                                         "source": "resume"},
+                              FABLE_ORCH_PROFILE="opus"))
+    assert "Profile switch → OPUS chair" in text
+
+
+@POSIX  # fake `ps` fixture needs POSIX shebang+chmod exec
+def test_teammate_skip_on_a_context_wiping_fire_clears_the_recorded_profile(tmp_path):
+    # startup: chair, fable core, marker profile=fable. compact: the
+    # walk says teammate, nothing injected — and the compacted context
+    # no longer carries the core. A resume with opus must then get the
+    # FULL core, never a bare delta on top of nothing. The ledger
+    # binding and the other hooks' keys survive the cleared record.
+    ledger = _bind(tmp_path, "s-tm-wipe")
+    cache = tmp_path / "fable-orch-model-s-tm-wipe.json"
+    data = json.loads(cache.read_text(encoding="utf-8"))
+    data["last_stop"] = 42.0
+    cache.write_text(json.dumps(data), encoding="utf-8")
+    env = _fake_ps_env(tmp_path, "1 claude --agent-id w@s --agent-name w")
+    assert run_hook(INJECT, {"model": "claude-fable-5", "session_id": "s-tm-wipe",
+                             "source": "compact"},
+                    env_extra=env, tmpdir=tmp_path) is None
+    data = _marker(tmp_path, "s-tm-wipe")
+    assert data["profile"] is None
+    assert data["ledger"] == str(ledger) and data["last_stop"] == 42.0
+    text = context_of(_inject(tmp_path, {"model": "claude-opus-5",
+                                         "session_id": "s-tm-wipe",
+                                         "source": "resume"}))
+    assert "Profile switch" not in text
+    assert "(OPUS-PRIMARY profile)" in text
+
+
+def test_unreadable_instructions_on_a_context_wiping_fire_clears_the_recorded_profile(tmp_path):
+    # Same hole via the other "nothing delivered" path: the instructions
+    # file cannot be read on a compact fire. The marker must still be
+    # written (the guards key off it) with the profile cleared.
+    ledger = _bind(tmp_path, "s-unread")
+    broken = tmp_path / "broken-root"
+    broken.mkdir()
+    assert run_hook(INJECT, {"model": "claude-fable-5", "session_id": "s-unread",
+                             "source": "compact"},
+                    env_extra={"CLAUDE_PLUGIN_ROOT": str(broken)},
+                    tmpdir=tmp_path) is None
+    data = _marker(tmp_path, "s-unread")
+    assert data["profile"] is None and data["started"] == 123.0
+    assert data["ledger"] == str(ledger)
+    text = context_of(_inject(tmp_path, {"model": "claude-opus-5",
+                                         "session_id": "s-unread",
+                                         "source": "resume"}))
+    assert "Profile switch" not in text and "(OPUS-PRIMARY profile)" in text
+
+
+def test_unreadable_instructions_on_first_start_still_write_the_marker(tmp_path):
+    broken = tmp_path / "broken-root"
+    broken.mkdir()
+    assert run_hook(INJECT, {"model": "claude-fable-5", "session_id": "s-unread0"},
+                    env_extra={"CLAUDE_PLUGIN_ROOT": str(broken)},
+                    tmpdir=tmp_path) is None
+    data = _marker(tmp_path, "s-unread0")
+    assert data["profile"] is None and data["model"] == "claude-fable-5"
+
+
+@POSIX  # fake `ps` fixture needs POSIX shebang+chmod exec
+def test_nothing_delivered_on_resume_keeps_the_recorded_profile(tmp_path):
+    # On `resume` the earlier core is provably still in context, so a
+    # teammate-skipped resume carries the record forward and the next
+    # real switch is still a delta.
+    _inject(tmp_path, {"model": "claude-fable-5", "session_id": "s-tm-keep"})
+    env = _fake_ps_env(tmp_path, "1 claude --agent-id w@s --agent-name w")
+    run_hook(INJECT, {"model": "claude-fable-5", "session_id": "s-tm-keep",
+                      "source": "resume"}, env_extra=env, tmpdir=tmp_path)
+    assert _marker(tmp_path, "s-tm-keep")["profile"] == "fable"
+    assert "Profile switch → OPUS-PRIMARY chair" in context_of(
+        _inject(tmp_path, {"model": "claude-opus-5", "session_id": "s-tm-keep",
+                           "source": "resume"}))
 
 
 # --- ledger reminder: compaction takes the reasoning, not the file ---
@@ -775,6 +924,8 @@ def test_stats_reads_the_switch_event_without_crashing(tmp_path):
         json.dumps({"ts": 2.0, "event": "inject_switch", "profile": "opus",
                     "from_profile": "fable", "fire": "compact"}),
         json.dumps({"ts": 3.0, "event": "inject_skipped", "reason": "teammate"}),
+        json.dumps({"ts": 4.0, "event": "inject", "profile": "opus",
+                    "from_profile": "fable", "fire": "compact"}),
         "{not json",
     ]) + "\n", encoding="utf-8")
     proc = subprocess.run([sys.executable, str(REPO / "scripts" / "stats.py"),
@@ -784,6 +935,7 @@ def test_stats_reads_the_switch_event_without_crashing(tmp_path):
     # totals table prints every event kind verbatim, so asserting
     # "inject_switch" passes even with the summary deleted.
     assert "mid-session profile switches: 1" in proc.stdout
+    assert "profile changes sent as a full core: 1 (compact: 1)" in proc.stdout
 
 
 @POSIX  # HOME= is meant to redirect expanduser("~"); nt's expanduser ignores it,
