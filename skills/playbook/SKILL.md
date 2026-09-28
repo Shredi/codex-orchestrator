@@ -117,9 +117,10 @@ STOPS the work: tell the user. Security review stays on opus.
 
 ## Chair context hygiene
 
-Consume briefs + verbatim snippets; bulk stays on disk. When a
-decision hinges on short exact content, read it yourself — never on a
-summary of a source that fits in a few hundred lines. Prefer per-task
-sessions: ledger and scratch survive /clear — finish a task, close it,
-start the next clean. Drop closed-phase raw material. Your closing
+Consume briefs + verbatim snippets; bulk stays on disk. Exact content
+a decision hinges on comes back as a verbatim snippet in a scout
+brief; under the fable profile (read guard active) read it yourself
+only if it is ≤ 60 lines (the guard exempts that). A top chair is long-lived: compact or clear between
+tasks, never mid-phase; ledger and scratch survive. Drop closed-phase
+raw material. Your closing
 recap walks the WHOLE ledger, item by item.
