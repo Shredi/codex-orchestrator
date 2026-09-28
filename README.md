@@ -1,12 +1,14 @@
 # Fable Orchestrator
 
-[![CI](https://github.com/Rylaa/fable5-orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/Rylaa/fable5-orchestrator/actions/workflows/ci.yml)
+[![CI](https://github.com/Shredi/fable5-opus5-orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/Shredi/fable5-opus5-orchestrator/actions/workflows/ci.yml)
+
+> Fork of [Rylaa/fable5-orchestrator](https://github.com/Rylaa/fable5-orchestrator). See [UPSTREAM.md](UPSTREAM.md) for what was taken from upstream and what was skipped, and why.
 
 **Run Claude Fable 5 all day — without watching the usage meter.**
 
 Fable 5 is the best chair a Claude Code session can have — and the most expensive seat in the house. Let it type every token itself and the session ends rate-limited, waiting out the reset window.
 
-This plugin makes the split mechanical. **Fable 5 keeps the chair** and spends tokens only on planning, arbitration, and final decisions. The volume — implementation, research, briefs, review, bulk reading — goes to **Sonnet 5**; the predictably hard slices — architecture, irreversible migrations, security review — go **directly to Opus 5**, which doubles as the escalation lane. **Every close gets fresh-eyes verification** from **Opus 5 or Fable 5**, one bounded call per workflow, before the chair moves on. Prefer **Opus in the chair**? The OPUS-PRIMARY profile runs the same discipline with Opus orchestrating and Fable kept as a capped planner and high-stakes verifier.
+This plugin makes the split mechanical. **Fable 5 keeps the chair** and spends tokens only on planning, arbitration, and final decisions. The volume — implementation, research, briefs, review, bulk reading — goes to **Sonnet 5**; the predictably hard slices — architecture, irreversible migrations, security review — go **directly to Opus 5.5**, which doubles as the escalation lane. **Every close gets fresh-eyes verification** from **Opus 5.5 or Fable 5**, one bounded call per workflow, before the chair moves on. Prefer **Opus in the chair**? The OPUS-PRIMARY profile runs the same discipline with Opus orchestrating and planning, and Fable reviewing orchestrated plans and every close.
 
 ## The division of labor
 
@@ -22,7 +24,7 @@ This plugin makes the split mechanical. **Fable 5 keeps the chair** and spends t
            ┌────────────────────────┬────┴───────────────────┬────────────────────────┐
            ▼                        ▼                        ▼                        ▼
 ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐
-│      SONNET 5       │  │      SONNET 5       │  │      SONNET 5       │  │       OPUS 5        │
+│      SONNET 5       │  │      SONNET 5       │  │      SONNET 5       │  │      OPUS 5.5       │
 │   mechanical bulk   │  │   implementation    │  │   routine judgment  │  │  hard work · direct │
 │   grep·fetch·scan   │  │   code · tests      │  │   briefs · review   │  │  architecture       │
 │   format · read     │  │   debug · refactor  │  │   filtering         │  │  migrations·security│
@@ -31,34 +33,34 @@ This plugin makes the split mechanical. **Fable 5 keeps the chair** and spends t
                                                              │ high stakes            │ opus
                                                           ┌──▼────────────────────────▼──┐
                                                           │   the verification valve     │
-                                                          │  verify: OPUS 5 / FABLE 5    │
-                                                          │  escalate: OPUS 5 → FABLE 5  │
+                                                          │ verify: OPUS 5.5 / FABLE 5   │
+                                                          │ escalate: OPUS 5.5 → FABLE 5 │
                                                           └──────────────────────────────┘
 ```
 
 Fable thinks. Sonnet carries the volume, Opus takes the hard slices. Opus or Fable checks the close. Your limit pays for the thinking plus at most one verification per close:
 
 ```
-┌─────────────────────────────────────────┬─────────────────┬─────────────────────┐
-│ Work                                    │ Runs on         │ Fable limit pays    │
-├─────────────────────────────────────────┼─────────────────┼─────────────────────┤
-│ Phase planning, arbitration, decisions  │ Fable 5 (chair) │ yes                 │
-│ Implementation, tests, refactors        │ Sonnet 5        │ nothing             │
-│ Source briefs, filtering, code review   │ Sonnet 5        │ nothing             │
-│ Bulk gathering (fetch, grep, scan)      │ Sonnet 5        │ nothing             │
-│ Hard slices: architecture, migrations   │ Opus 5 (direct) │ nothing             │
-│ Security / adversarial review           │ Opus 5          │ nothing             │
-│ Escalations (sonnet "uncertain")        │ Opus → Fable    │ mostly nothing      │
-│ Fresh-eyes verification — EVERY close   │ Opus/Fable 5    │ at most 1 per close │
-└─────────────────────────────────────────┴─────────────────┴─────────────────────┘
+┌─────────────────────────────────────────┬───────────────────┬─────────────────────┐
+│ Work                                    │ Runs on           │ Fable limit pays    │
+├─────────────────────────────────────────┼───────────────────┼─────────────────────┤
+│ Phase planning, arbitration, decisions  │ Fable 5 (chair)   │ yes                 │
+│ Implementation, tests, refactors        │ Sonnet 5          │ nothing             │
+│ Source briefs, filtering, code review   │ Sonnet 5          │ nothing             │
+│ Bulk gathering (fetch, grep, scan)      │ Sonnet 5          │ nothing             │
+│ Hard slices: architecture, migrations   │ Opus 5.5 (direct) │ nothing             │
+│ Security / adversarial review           │ Opus 5.5          │ nothing             │
+│ Escalations (sonnet "uncertain")        │ Opus → Fable      │ mostly nothing      │
+│ Fresh-eyes verification — EVERY close   │ Opus/Fable 5      │ at most 1 per close │
+└─────────────────────────────────────────┴───────────────────┴─────────────────────┘
 ```
 
-## Why Fable 5 × Sonnet 5 × Opus 5 is the right trio
+## Why Fable 5 × Sonnet 5 × Opus 5.5 is the right trio
 
 - **Fable tokens are the heaviest draw on your limit.** Every token of bulk work kept off the chair extends how long Fable stays in it.
 - **Sonnet 5 carries the volume.** Near-Opus quality on coding and agentic work — the chair routes it every mechanical sweep, implementation, and routine-judgment task.
-- **Opus 5 takes the hard slices directly.** Architecture tradeoffs, irreversible migrations, complex multi-system implementation, and all security/adversarial review are assigned straight to Opus — no failed Sonnet pass required — and Opus doubles as the escalation lane.
-- **The valve is two-tier, and it never opens by itself.** Fresh-eyes verification is mandatory on **every** close. It runs on Opus 5 or Fable 5 — Opus spares the Fable limit; the largest, highest-stakes closes still get Fable, the strongest model at the single moment it matters most. Anthropic measured this worker+verifier split: Sonnet 5 with a Fable 5 advisor checking its work lands within 10% of Fable 5's score on the whole task. Escalations climb sonnet → opus → fable, with security reviews kept off Fable, whose classifiers decline benign security work most readily. Any tier can still decline it — the profile's rule is to first remove the documented false-positive causes (base64 in the worker's tool output, "does this compile" phrasing, a lesser-known language with no docs) and retry the SAME tier, which fixes the input rather than the wording; failing that, rerun the refused task unchanged on another tier and, if that tier declines too, stop and tell you, never to reword the request past a classifier. A worker that returns "uncertain" never bounces back to the chair.
+- **Opus 5.5 takes the hard slices directly.** Architecture tradeoffs, irreversible migrations, complex multi-system implementation, and all security/adversarial review are assigned straight to Opus — no failed Sonnet pass required — and Opus doubles as the escalation lane.
+- **The valve is two-tier, and it never opens by itself.** Fresh-eyes verification is mandatory on **every** close. It runs on Opus 5.5 or Fable 5 — Opus spares the Fable limit; the largest, highest-stakes closes still get Fable, the strongest model at the single moment it matters most. Anthropic measured this worker+verifier split: Sonnet 5 with a Fable 5 advisor checking its work lands within 10% of Fable 5's score on the whole task. Escalations climb sonnet → opus → fable, with security reviews kept off Fable, whose classifiers decline benign security work most readily. Any tier can still decline it — the profile's rule is to first remove the documented false-positive causes (base64 in the worker's tool output, "does this compile" phrasing, a lesser-known language with no docs) and retry the SAME tier, which fixes the input rather than the wording; failing that, rerun the refused task unchanged on another tier and, if that tier declines too, stop and tell you, never to reword the request past a classifier. A worker that returns "uncertain" never bounces back to the chair.
 - **Effort is not a per-spawn lever.** The Agent tool has no effort parameter — a spec that says "work at medium effort" is ignored, and every worker and verifier runs at the chair's own effort level. The only real per-spawn choice is the MODEL (sonnet/opus/fable via the `model` parameter), which is what this whole routing story is actually about.
 
 ## What the plugin does
@@ -94,7 +96,7 @@ Three rules in the contract exist purely to keep worker output from undoing the 
 - **Research is one worker per source, not two.** A single Sonnet agent fetches the source **verbatim to disk first** — the disk copy is the audit trail, with no relevance filtering during the fetch — and only then returns a brief built from that copy: claims, evidence, exact quotes, confidence, contradictions, and the path. One synthesizer reads across the briefs. The chair checks the synthesis against the ledger and decides; intermediates never enter its context.
 - **Similar mechanical work is batched into one worker.** Every spawn pays a fixed overhead — system prompt, project rules, tool schemas — before doing anything useful. Five greps are one agent with a checklist, not five agents. Separate spawns are for genuine parallelism or worktree isolation, which earn that overhead back.
 
-**Opus in the chair** gets one of two profiles. A detected Opus model gets **OPUS-PRIMARY** ([`instructions/dynamic-workflow-opus-primary.md`](instructions/dynamic-workflow-opus-primary.md)) — Opus by choice: it orchestrates and is the everyday ceiling and verifier, while Fable stays available as a capped specialist (at most two spawns per task without your OK): the **planner** for hard, irreversible or multi-system plans, which writes its plan to `./.workflow/scratch/` for the chair to present at the plan checkpoint, and the **fresh-eyes verifier** for high-stakes closes — production relays, edge proxies, physical actuators, irreversible migrations, plugin/fork releases, large refactors. Security review stays on Opus. If the Fable limit is spent, or a fable spawn fails on it, that role falls to Opus and the chair notes it in the ledger — no restart.
+**Opus in the chair** gets one of two profiles. A detected Opus model gets **OPUS-PRIMARY** ([`instructions/dynamic-workflow-opus-primary.md`](instructions/dynamic-workflow-opus-primary.md)) — Opus by choice: it orchestrates and plans, and is the everyday ceiling, while Fable is the **REVIEWER** tier, never a planner or builder: a fresh Fable **reviews the plan** when a ledger exists (`./.workflow/scratch/plan-<topic>.md` → `plan-review-<topic>.md`, a VERDICT line, CAP 2 cycles, the chair presents the plan with the findings) and gives **fresh-eyes verification** to EVERY close, not only high-stakes ones. Security review stays on Opus; verifying a security close is still Fable. If the Fable limit is spent, or a fable spawn fails on it, the same verifier agent runs with a `model: "opus"` override and the chair notes it in the ledger — no restart.
 
 **When the Fable limit runs dry**, pin the **OPUS** fallback ([`instructions/dynamic-workflow-opus.md`](instructions/dynamic-workflow-opus.md)) with `FABLE_ORCH_PROFILE=opus`: same discipline, the fable tier rests entirely, fresh-eyes verification and the escalation ceiling fall to a fresh Opus agent. The model string cannot tell "Opus by choice" from "Opus because the limit is spent", so the fallback is reached **only** through the pin and lasts exactly as long as the pin is set.
 
@@ -307,7 +309,7 @@ Watch, don't type: a teammate's pane is its working terminal, and stray input in
 ## Install
 
 ```
-/plugin marketplace add Rylaa/fable5-orchestrator
+/plugin marketplace add Shredi/fable5-opus5-orchestrator
 /plugin install orchestrator@fable-orchestrator
 ```
 

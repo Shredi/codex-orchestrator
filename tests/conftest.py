@@ -1,6 +1,8 @@
+import atexit
 import functools
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -76,6 +78,8 @@ def _chair_ps_dir():
     reaches this shim.
     """
     bin_dir = Path(tempfile.mkdtemp(prefix="fable-orch-testshim-"))
+    # Removed at interpreter exit, or every pytest run leaks one dir.
+    atexit.register(shutil.rmtree, str(bin_dir), ignore_errors=True)
     ps = bin_dir / "ps"
     ps.write_text(
         "#!/usr/bin/env python3\n"

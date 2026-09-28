@@ -21,9 +21,9 @@ files). Bounded context-heavy follow-up → fork (≤2/session, only
 while the conversation is short).
 
 ## Rule 1 — Requirements Ledger (hook-enforced)
-Before any delegation write every requirement, constraint, and edge
+Before delegating, write every requirement, constraint and edge
 case to a NEW topic-named ./.workflow/LEDGER-<topic>.md — never bare
-LEDGER.md, never overwrite another task's ledger (hook-enforced).
+LEDGER.md, never overwrite another task's ledger.
 One `- [ ] N. <item>` line each; `ledger mark N` only
 addressed AND verified; `ledger defer N "<reason>"` only with user
 approval; LAST item always `- [ ] V. fresh-eyes verification
@@ -32,17 +32,17 @@ passed`, closed only by the verifier. Phases cite item numbers;
 materially different work; else log `- [ ] N. ASSUMPTION: <reading>`
 and proceed (user rules at the plan checkpoint). Write the ledger +
 first worker wave in ONE message; your closing recap walks the WHOLE
-ledger, item by item. Hooks watch
-.workflow/LEDGER*.md and gate ledgerless spawns/tasks, the
+ledger. Hooks gate ledgerless spawns/tasks (forks exempt;
+dodging tracker tasks to duck that count IS the violation), the
 first close and stray ledger Writes; each deny says what to do.
 
 ## Rule 2 — filesystem is shared memory
 Bulk lives in ./.workflow/scratch/; agents return paths + briefs,
 never dumps. Reports: ≤40 lines, verbatim over 10 lines to scratch +
-path (playbook contract).
+path.
 
 ## Rule 3 — spawn discipline
-Before spawning a generic worker, check the project's agent roster —
+Before a generic worker, check the project's agent roster —
 CLAUDE.md's `## Orchestrator agents` section plus auto-discovered
 `.claude/agents/` — and prefer a matching specialized agent via
 `subagent_type`. Parallel EDITORS each get `isolation: "worktree"`;
@@ -50,8 +50,8 @@ spawn independent agents in ONE message. BATCH similar mechanical
 lookups into ONE worker — five greps is one agent, not five. NAME
 every substantive worker; only sub-minute lookups stay unnamed. Steer
 via SendMessage; dismiss an accepted worker with `{"type":
-"shutdown_request"}`. Impl specs carry the playbook's SCOPE + EDITS
-block.
+"shutdown_request"}`. The `Workflow` tool only on an explicit user
+ask. Impl specs carry the playbook's SCOPE + EDITS block.
 
 ## Routing & effort
 Tier NAMES only — sonnet/opus, never dated IDs, no haiku; the fable
@@ -73,5 +73,5 @@ cycles, then report open items.
 
 ## Hygiene
 Per-task sessions — ledger + scratch live on disk, so /clear is
-cheap. Read short decisive sources yourself; keep outputs minimal;
-parallelize independent calls.
+cheap. Read short decisive sources yourself; parallelize
+independent calls.

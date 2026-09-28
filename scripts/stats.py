@@ -36,6 +36,7 @@ def main():
     per_day = defaultdict(Counter)
     events = Counter()
     profiles = Counter()
+    gated_switch_fires = Counter()
     ledgers = Counter()
     swarm_reaped = 0
     panes_reaped = 0
@@ -63,6 +64,8 @@ def main():
         per_day[day][event] += 1
         if event == "inject":
             profiles[rec.get("profile") or rec.get("model") or "?"] += 1
+            if rec.get("from_profile"):
+                gated_switch_fires[rec.get("fire") or "?"] += 1
         if event == "stop_block":
             ledgers[rec.get("ledger") or "?"] += 1
         if event == "cleanup":
@@ -121,6 +124,14 @@ def main():
         # tiers mid-flight.
         print(f"\nmid-session profile switches: {switches} "
               f"(short delta injected, not the full core)")
+    if gated_switch_fires:
+        # A profile change the delta gate sent as a full core, by the
+        # SessionStart kind it arrived on — the evidence any decision to
+        # widen the gate has to rest on.
+        detail = ", ".join(f"{fire}: {n}"
+                           for fire, n in gated_switch_fires.most_common())
+        print(f"{'' if switches else chr(10)}profile changes sent as a full core: "
+              f"{sum(gated_switch_fires.values())} ({detail})")
 
     blocks = cold_distinct.get("cold_block", 0)
     warns = cold_distinct.get("cold_warn", 0)
