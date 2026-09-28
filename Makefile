@@ -35,7 +35,13 @@ pull-core:
 # processes sidesteps the collision entirely; it also mirrors the two-repo
 # model (core's tests prove core/ is unbroken standalone, this repo's tests
 # prove the profiles/agents/codex-sync layer on top of it).
+# Homebrew python3 has no pytest, so `make test` bootstraps a local .venv.
+VENV ?= .venv
+
+$(VENV)/bin/python:
+	python3 -m venv $(VENV) && $(VENV)/bin/python -m pip install -q pytest
+
 .PHONY: test
-test:
-	cd core && python3 -m pytest tests/ -q
-	python3 -m pytest tests/ -q
+test: $(VENV)/bin/python
+	cd core && ../$(VENV)/bin/python -m pytest tests/ -q
+	$(VENV)/bin/python -m pytest tests/ -q
