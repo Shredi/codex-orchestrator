@@ -327,3 +327,57 @@ def test_ordinary_no_ledger_session_writes_no_metrics_line(repo_dir, tmp_path):
     result = run_hook(STOP, stop_payload(repo_dir, session_id), env_extra=env, tmpdir=tmp_path)
     assert result is None
     assert not (home / ".claude" / "fable-orch" / "metrics.jsonl").exists()
+
+
+# --- foreign-ledger adoption: pass, don't bind ---------------------------
+
+def _foreign_setup(repo_dir, tmp_path):
+    """S1 bound to ledger A; S2 has a marker but no binding yet."""
+    ledger_a = _named_ledger(repo_dir, "LEDGER-a.md", "- [ ] 1. a's item\n")
+    write_marker(tmp_path, time.time(), session="s1", ledger=ledger_a)
+    write_marker(tmp_path, time.time(), session="s2")
+    return ledger_a
+
+
+def test_spawn_never_adopts_a_ledger_another_live_session_holds(repo_dir, tmp_path):
+    _foreign_setup(repo_dir, tmp_path)
+    # Gate passes (the foreign ledger satisfies it) but S2 stays unbound...
+    assert run_hook(SPAWN, spawn_payload(repo_dir, "s2"), tmpdir=tmp_path) is None
+    assert "ledger" not in marker(tmp_path, "s2")
+    # ...so its Stop is never held on S1's open items.
+    assert run_hook(STOP, stop_payload(repo_dir, "s2"), tmpdir=tmp_path) is None
+
+
+def test_task_create_never_adopts_a_foreign_ledger(repo_dir, tmp_path):
+    _foreign_setup(repo_dir, tmp_path)
+    assert run_hook(SPAWN, task_payload(repo_dir, "s2"), tmpdir=tmp_path) is None
+    assert "ledger" not in marker(tmp_path, "s2")
+    assert run_hook(STOP, stop_payload(repo_dir, "s2"), tmpdir=tmp_path) is None
+
+
+def test_session_writing_its_own_ledger_holds_on_it_not_the_foreign_one(repo_dir, tmp_path):
+    _foreign_setup(repo_dir, tmp_path)
+    run_hook(SPAWN, spawn_payload(repo_dir, "s2"), tmpdir=tmp_path)
+    ledger_b = _named_ledger(repo_dir, "LEDGER-b.md", "- [ ] 1. b's item\n")
+    run_hook(BIND, bind_payload("s2", ledger_b), tmpdir=tmp_path)
+    assert marker(tmp_path, "s2")["ledger"] == os.path.realpath(str(ledger_b))
+    result = run_hook(STOP, stop_payload(repo_dir, "s2"), tmpdir=tmp_path)
+    assert result["decision"] == "block"
+    assert "b's item" in result["reason"]
+    assert "a's item" not in result["reason"]
+
+
+def test_adoption_resumes_once_the_other_session_marker_is_gone(repo_dir, tmp_path):
+    ledger_a = _foreign_setup(repo_dir, tmp_path)
+    marker_path(tmp_path, "s1").unlink()  # SessionEnd cleanup
+    assert run_hook(SPAWN, spawn_payload(repo_dir, "s2"), tmpdir=tmp_path) is None
+    assert marker(tmp_path, "s2")["ledger"] == os.path.realpath(str(ledger_a))
+
+
+def test_corrupt_foreign_markers_fail_open_to_adoption(repo_dir, tmp_path):
+    ledger_a = _named_ledger(repo_dir, "LEDGER-a.md", "- [ ] 1. a's item\n")
+    write_marker(tmp_path, time.time(), session="s2")
+    marker_path(tmp_path, "junk").write_text("{not json", encoding="utf-8")
+    marker_path(tmp_path, "list").write_text("[1, 2]", encoding="utf-8")
+    assert run_hook(SPAWN, spawn_payload(repo_dir, "s2"), tmpdir=tmp_path) is None
+    assert marker(tmp_path, "s2")["ledger"] == os.path.realpath(str(ledger_a))

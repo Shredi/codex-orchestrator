@@ -657,7 +657,8 @@ def test_stop_warms_every_session_sidecar(repo_dir, tmp_path):
     paths = []
     for name, body in (("fable-orch-model-test-session.json", '{"started": 1.0}'),
                        ("fable-orch-stop-test-session.json", '{"blocked": {}}'),
-                       ("fable-orch-tasks-test-session.json", '{"count": 2}')):
+                       ("fable-orch-tasks-test-session.json", '{"count": 2}'),
+                       ("fable-orch-reads-test-session.json", '{"count": 3}')):
         p = tmp_path / name
         p.write_text(body, encoding="utf-8")
         os.utime(p, (old, old))

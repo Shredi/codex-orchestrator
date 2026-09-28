@@ -52,6 +52,9 @@ def main():
     cold_usd = defaultdict(float)
     cold_distinct = Counter()
     cold_seen = set()
+    # Chair read guard: counted (non-brief) reads and denies per session.
+    chair_reads = Counter()
+    chair_denies = Counter()
 
     for rec in records(path):
         event = rec.get("event") or "?"
@@ -85,6 +88,10 @@ def main():
                     cold_usd[event] += float(rec.get("est_usd") or 0)
             except (TypeError, ValueError):
                 pass
+        if event == "chair_read" and rec.get("decision") in ("count", "warn", "deny"):
+            chair_reads[rec.get("session") or "?"] += 1
+            if rec.get("decision") == "deny":
+                chair_denies[rec.get("session") or "?"] += 1
         if event == "teammate_reap":
             try:
                 panes_reaped += int(rec.get("killed") or 0)
@@ -159,6 +166,13 @@ def main():
             # The guard passed instead of blocking: without a writable
             # marker it cannot offer the re-send escape hatch.
             print(f"blocks suppressed (marker unwritable): {stamp_failed}")
+
+    if chair_reads:
+        n = len(chair_reads)
+        print(f"\nchair reads (fable top): {sum(chair_reads.values())} counted in "
+              f"{n} session{'' if n == 1 else 's'} (max "
+              f"{max(chair_reads.values())}/session), "
+              f"{sum(chair_denies.values())} denied in {len(chair_denies)}")
 
     if swarm_reaped:
         print(f"\ntmux teammate servers reaped: {swarm_reaped}")

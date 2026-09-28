@@ -25,6 +25,7 @@ GUARD_SCRIPTS = [
     "ledger_guard_write.py",
     "destructive_guard.py",
     "destructive_guard_install.py",
+    "chair_read_guard.py",
 ]
 
 
