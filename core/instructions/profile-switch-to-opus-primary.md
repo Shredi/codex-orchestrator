@@ -9,3 +9,4 @@ on review spawns. Limit spent or a fable spawn fails on it → the same
 verifier agent with a `model: "opus"` override, noted in the ledger.
 Security review as work stays on opus. Every other rule from the
 already-injected core profile stays in force.
+`ledger` is on PATH; bare it uses your bound ledger (-f for another).

@@ -6,6 +6,17 @@
 # it does not touch main and is never pushed automatically.
 VERSION ?=
 
+# `make test` runs pytest from a local .venv: Homebrew python3 has no pytest
+# and refuses global pip installs. CI is unaffected — it pip-installs pytest.
+VENV ?= .venv
+
+$(VENV)/bin/python:
+	python3 -m venv $(VENV) && $(VENV)/bin/python -m pip install -q pytest
+
+.PHONY: test
+test: $(VENV)/bin/python
+	$(VENV)/bin/python -m pytest tests/ -q
+
 .PHONY: tag-core
 tag-core:
 	@if [ -z "$(VERSION)" ]; then \

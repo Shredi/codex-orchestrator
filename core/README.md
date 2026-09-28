@@ -116,7 +116,7 @@ The plugin itself stays generic and ships no domain agents of its own — a proj
 
 Before serious delegation the chair writes every requirement, constraint, and edge case as one checkbox line in a **new, topic-named** `./.workflow/LEDGER-<topic>.md` — never the bare `LEDGER.md`, and never an existing ledger file (a write guard denies overwriting one; see below). The hooks watch every `LEDGER*.md` in that directory, newest first; a name *ending* in `-archive.md` is retired and silences the close guard for good, so a live `LEDGER-archive-migration.md` still counts. Files survive context compaction; conversation context does not — which is why a `compact` or `resume` session start hands a chair already bound to a ledger one extra line naming that file's path, and why the chair's closing recap walks the whole ledger item by item instead of only the last phase.
 
-**Edit items with the `ledger` helper** (the plugin's `bin/` is on PATH): `ledger status`, `ledger mark N ["note"]`, `ledger defer N "<reason>"`, `ledger add "<text>"` (lands before `V.`), `ledger note N "<text>"` — atomic, fence-aware, line endings kept; only the verifier runs `ledger mark V --verifier`.
+**Edit items with the `ledger` helper** (the plugin's `bin/` is on PATH; bare commands use your session-bound ledger, `-f PATH` only for another ledger): `ledger status`, `ledger mark N ["note"]`, `ledger defer N "<reason>"`, `ledger add "<text>"` (lands before `V.`), `ledger note N "<text>"` — atomic, fence-aware, line endings kept; only the verifier runs `ledger mark V --verifier`.
 
 **Ambiguity goes in the ledger, not into a question.** The chair asks only when different readings would lead to materially different work; otherwise it records `- [ ] N. ASSUMPTION: <reading>` and proceeds, and you rule on it at the plan checkpoint — the harness now tells the model you are not watching in real time, so a question mid-task stalls the work instead of resolving it.
 
@@ -429,8 +429,10 @@ Set these in `~/.claude/settings.json` under `"env"`.
 ## Tests
 
 ```
-python3 -m pytest tests/ -q
+make test
 ```
+
+(`make test` bootstraps a local `.venv` with pytest on first run — Homebrew `python3` ships none — and reuses it after.)
 
 The hooks are plain stdin/stdout JSON filters; the tests run them end-to-end as subprocesses — the spawn threshold and its env override, the fork exemption, Workflow script gating, the task-list gate (counting, one deny per session, session isolation), the upward ledger search and its repo-root/worktree/$HOME boundaries, stop-guard session scoping and ownership, the cold-cache bands (slash commands and teammates never blocked, the ack window and its expiry, tail-only transcript reads, fail-open on every corrupt input), metrics emission and opt-out, the `FABLE_ORCH_HARNESS` stamp (present/absent across every hook script), the destructive-command guard (the 2026-09-09 incident line, every deny class including the nested and remote ones, the ask band, the allow band, the `updatedInput` rewrite and its idempotence) and the `rm` shim — driven exclusively through `SAFE_RM_DRYRUN=1`, so no test ever runs a real `rm`, Codex CLI transcript detection and both its usage-line shapes plus the byte-size fallback, injection, the mid-session profile-switch delta, cache cleanup, teammate reaping (against a fake tmux/ps on PATH), the chair read guard (fable-only and main-session-only activation, every exemption, Bash read detection, warn/deny thresholds and their env override, session isolation, the clear/compact reset) and the child-orchestrator note (present only for an `opus-primary` chair with `FABLE_ORCH_PARENT`, never on a switch delta). A second layer pins the *content*: the cores stay under their size budget, both keep requiring the playbook skill, and the decisions that survived the diet (fresh-eyes on every close, the fork cap, the report cap, the batching rule) plus the Fable 5.1 additions (ledger assumptions, the whole-ledger recap, the decline false-positive check, the worker spec blocks), the effort-not-selectable-per-spawn correction, and the project-agent-roster rule, are asserted line by line.
 
