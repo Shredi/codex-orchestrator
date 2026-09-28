@@ -20,7 +20,9 @@ only single-sitting diffs (≈ ≤3 files). Bounded context-heavy follow-up → 
 ## Rule 1 — Requirements Ledger (hook-enforced)
 Before delegating, write every requirement, constraint and edge case to a NEW
 topic-named ./.workflow/LEDGER-<topic>.md — never bare LEDGER.md, never
-overwrite another task's ledger. One `- [ ] N. <item>` line each;
+overwrite another task's ledger. `ledger` is on PATH (plugin bin/); bare
+`ledger status/mark/defer/add/note` hits your bound ledger, `-f` only for another.
+One `- [ ] N. <item>` line each;
 `ledger mark N` only addressed AND verified; `ledger defer N "<reason>"` only
 with user approval; LAST item always
 `- [ ] V. fresh-eyes verification passed`, closed only by the verifier. Phases

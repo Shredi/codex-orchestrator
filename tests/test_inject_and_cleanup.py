@@ -54,10 +54,12 @@ def test_cores_stay_on_the_token_diet():
     # fable's budget was raised +500 on 2026-09-28 for the top-orchestrator
     # chair (0.21.0: explicit model:, batching nudge, scout-first hygiene,
     # child Opus orchestrator handoff).
+    # fable +150, opus +100, opus-primary +100: raised on 2026-09-28
+    # (0.21.1) for the `ledger` on-PATH clause.
     budgets = {
-        "dynamic-workflow-fable.md": 4500,
-        "dynamic-workflow-opus.md": 4000,
-        "dynamic-workflow-opus-primary.md": 4400,
+        "dynamic-workflow-fable.md": 4650,
+        "dynamic-workflow-opus.md": 4100,
+        "dynamic-workflow-opus-primary.md": 4500,
     }
     for name in CORES:
         text = _instr(name)
@@ -81,6 +83,13 @@ def test_switch_notes_stay_tiny():
         budget = budgets[name]
         assert len(text) < budget, \
             f"{name} is {len(text)} chars — over the {budget}-char delta budget"
+
+
+def test_cores_and_switch_notes_say_ledger_is_on_path():
+    # Chairs hand-typed version-pinned bin/ledger paths because nothing told
+    # them the plugin's bin/ is on PATH and bare `ledger` uses the bound one.
+    for name in CORES + SWITCHES:
+        assert "`ledger` is on PATH" in _instr(name), name
 
 
 def test_playbook_skill_exists_and_stays_bounded():
